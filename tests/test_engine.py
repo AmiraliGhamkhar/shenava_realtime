@@ -162,3 +162,31 @@ def test_a_backend_crash_does_not_kill_the_worker():
     assert engine.is_running is False
     assert calls["count"] >= 2
     assert utterances == ["بیمار تحت عمل CABG"]
+
+
+def test_forced_vad_split_does_not_complete_a_number_phrase():
+    """Regression: a forced cut of 'سی و' | 'پنج' emitted '30' and '5'."""
+    config = AppConfig()
+    config.audio.queue_max_chunks = 128
+    config.save_transcripts = False
+    capture = FakeAudioCapture()
+    texts = iter(["بیمار دوز سی و", "پنج میلی گرم"])
+    backend = FakeBackend(RecordingTranscriber(lambda seconds: next(texts)))
+    engine = RealtimeASR(config, backend=backend, audio_capture=capture)
+    deltas: list = []
+    utterances: list = []
+    engine.on_text_delta = lambda text, confidence: deltas.append(text)
+    engine.on_utterance_end = lambda text, confidence: utterances.append(text)
+    engine.start()
+    try:
+        capture.emit_utterance(blocks(1.0), forced=True)  # segment-cap cut
+        assert wait_for(lambda: len(utterances) == 1)
+        capture.emit_utterance(blocks(1.0))  # natural continuation
+        assert wait_for(lambda: len(utterances) == 2)
+    finally:
+        engine.stop()
+
+    transcript = engine.transcript
+    assert "30" not in transcript and " 5" not in transcript
+    assert "سی و" in transcript and "پنج" in transcript
+    assert engine.stats.get("forced_splits") == 1

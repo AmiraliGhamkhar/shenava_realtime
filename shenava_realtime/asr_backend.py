@@ -131,23 +131,50 @@ class NeMoASR:
         else:
             model.change_decoding_strategy(decoding)
         self._model = model
+        self._streaming_supported = self._check_streaming_context(
+            model, self.config.right_context
+        )
+        if self._streaming_supported:
+            encoder = getattr(model, "encoder", None)
+            encoder.set_default_att_context_size([70, self.config.right_context])
+            encoder.setup_streaming_params()
+        self.load_seconds = time.time() - started
+        logger.info("ASR model ready on %s in %.1fs (%s)", self.device, self.load_seconds, type(model).__name__)
+
+    @staticmethod
+    def _check_streaming_context(model: Any, right_context: int) -> bool:
+        """Decide native-streaming support from the actual encoder metadata.
+
+        Returns ``True`` only when the encoder can stream at
+        ``[70, right_context]``.  A streaming-capable encoder that lacks the
+        requested context is a configuration error and raises here — at
+        startup, before anything is decoded — instead of silently degrading
+        to endpoint-only decoding.  Checkpoints without streaming support or
+        without context metadata keep the documented endpoint-only fallback.
+        """
         encoder = getattr(model, "encoder", None)
         contexts = getattr(encoder, "att_context_size_all", None)
         if not contexts:
             current_context = getattr(encoder, "att_context_size", None)
             if current_context is not None and len(current_context) == 2:
                 contexts = [current_context]
-        requested = [70, self.config.right_context]
-        # Do not force streaming on an offline-trained checkpoint.
-        self._streaming_supported = bool(
-            callable(getattr(model, "conformer_stream_step", None))
-            and contexts and requested in [list(c) for c in contexts]
-        )
-        if self._streaming_supported:
-            encoder.set_default_att_context_size(requested)
-            encoder.setup_streaming_params()
-        self.load_seconds = time.time() - started
-        logger.info("ASR model ready on %s in %.1fs (%s)", self.device, self.load_seconds, type(model).__name__)
+        supported = [list(c) for c in contexts] if contexts else []
+        if not supported:
+            # No context metadata: only the offline endpoint path is knowable.
+            return False
+        requested = [70, right_context]
+        if requested not in supported:
+            if callable(getattr(model, "conformer_stream_step", None)):
+                raise RuntimeError(
+                    f"Encoder supports streaming contexts {supported}; "
+                    f"right_context={right_context} is not one of them. "
+                    "Choose a supported right context "
+                    "(--right-context / SHENAVA_RIGHT_CONTEXT) or use a "
+                    "checkpoint that matches the requested context."
+                )
+            # Offline checkpoint: endpoint-only fallback (documented).
+            return False
+        return callable(getattr(model, "conformer_stream_step", None))
 
     def resolve_checkpoint_path(self) -> Optional[Path]:
         """Find the configured checkpoint, tolerating relative paths.

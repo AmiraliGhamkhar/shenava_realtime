@@ -73,3 +73,14 @@ def test_repetition_removal_does_not_eat_doubled_letters(processor: PostProcesso
 def test_extra_terms_can_be_injected():
     processor = PostProcessor(extra_terms={"آزیترومایسین": "azithromycin"})
     assert processor.process("آزیترومایسین") == "azithromycin"
+
+
+def test_conflicting_extra_terms_raise_at_construction():
+    """Conflicts must fail when the PostProcessor is built, not on first match."""
+    with pytest.raises(ValueError, match="conflicting rules"):
+        PostProcessor(extra_terms={"سی ای بی جی": "NOT-CABG"})
+    with pytest.raises(ValueError, match="conflicting rules"):
+        PostProcessor(extra_terms={"میلی گرم": "grams"})
+    # Identical restatement of an existing rule is not a conflict.
+    processor = PostProcessor(extra_terms={"کابج": "CABG"})
+    assert processor.process("کابج") == "CABG"

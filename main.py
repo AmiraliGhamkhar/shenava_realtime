@@ -48,6 +48,19 @@ class ShenavaApp:
 
     def __init__(self, config: Optional[AppConfig] = None, *, backend=None, audio_capture=None) -> None:
         self.config = config or AppConfig.from_env()
+        if not self.config.asr.commit_on_endpoint and (
+            self.config.injector.enabled
+            or self.config.clinical_sqlite
+            or self.config.clinical_jsonl
+        ):
+            # Early commit cannot retract an already injected prefix; refuse
+            # the unsafe combination at startup instead of trusting a warning.
+            raise ValueError(
+                "commit_on_endpoint=false (early commit) cannot retract an "
+                "injected prefix and must not be combined with text injection "
+                "or clinical persistence. Enable endpoint commit (the default) "
+                "or disable the injector and --clinical-sqlite/--clinical-jsonl."
+            )
         setup_logging(self.config.log_level, log_file=Path("app.log"))
 
         self.clinical = None

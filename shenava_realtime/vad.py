@@ -90,6 +90,9 @@ class VADEvent:
     audio: Optional[np.ndarray] = None
     duration_s: float = 0.0
     rms: float = 0.0
+    # True only for a segment-cap cut (keep_speaking): the endpoint is an
+    # artifact of the 20 s limit, not a natural phrase boundary.
+    forced: bool = False
 
 
 def rms(frame: np.ndarray) -> float:
@@ -238,6 +241,7 @@ class EnergyVAD:
             audio=audio,
             duration_s=duration,
             rms=self.last_rms,
+            forced=keep_speaking,
         )
 
     def _drop_segment(self) -> None:

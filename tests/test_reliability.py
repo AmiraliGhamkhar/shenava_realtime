@@ -81,7 +81,7 @@ def test_max_segment_restart_preserves_all_audio_once():
     def audio(chunk, speech):
         if speech and active[0]:
             received.extend(chunk)
-    def end(duration):
+    def end(duration, forced=False):
         ends.append(duration)
         active[0] = False
     capture.on_speech_start, capture.on_audio, capture.on_speech_end = start, audio, end

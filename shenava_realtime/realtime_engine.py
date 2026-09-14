@@ -171,8 +171,8 @@ class RealtimeASR:
             return
         self._enqueue((_AUDIO, chunk))
 
-    def _on_speech_end(self, duration: float) -> None:
-        self._enqueue((_END, duration))
+    def _on_speech_end(self, duration: float, forced: bool = False) -> None:
+        self._enqueue((_END, duration, forced))
 
     def _enqueue(self, item: Optional[tuple]) -> None:
         with self._enqueue_lock:
@@ -225,9 +225,13 @@ class RealtimeASR:
             if not self.pipeline.is_active:
                 return
             duration = float(item[1])
+            forced = bool(item[2]) if len(item) > 2 else False
+            if forced:
+                # Segment-cap cut, not a natural phrase boundary.
+                self.stats["forced_splits"] = self.stats.get("forced_splits", 0) + 1
             self.stats["audio_seconds"] += duration
             self.stats["utterances"] += 1
-            deltas = self.pipeline.end_utterance()
+            deltas = self.pipeline.end_utterance(forced=forced)
             self._consume_deltas(deltas)
             self.stats["decode_seconds"] = self.pipeline.decode_seconds
             text = self.pipeline.committed_text

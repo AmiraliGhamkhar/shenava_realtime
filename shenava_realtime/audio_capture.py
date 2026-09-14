@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
@@ -55,7 +56,7 @@ class AudioCapture:
 
         # Callbacks (set by the engine; invoked on the consumer thread only).
         self.on_speech_start: Optional[Callable[[np.ndarray], None]] = None
-        self.on_speech_end: Optional[Callable[[float], None]] = None
+        self.on_speech_end: Optional[Callable[[float, bool], None]] = None
         self.on_discontinuity: Optional[Callable[[], None]] = None
         self.on_audio: Optional[Callable[[np.ndarray, bool], None]] = None
 
@@ -69,6 +70,12 @@ class AudioCapture:
         self._dropped_chunks = 0
         self._warned_drop = False
         self._discontinuity = threading.Event()
+        # Device-dropout heartbeat state (consumer thread only, except the
+        # resume() baseline reset which takes the lock).
+        self._stopping = False
+        self._dropout_reported = False
+        self._last_block_time = 0.0
+        self.last_error: Optional[str] = None
 
         self.stats: Dict[str, float] = {
             "chunks": 0,
@@ -111,6 +118,11 @@ class AudioCapture:
             self.vad.reset()
             self._discontinuity.clear()
             self._paused = False
+            self._stopping = False
+            self._dropout_reported = False
+            self.last_error = None
+            with self._lock:
+                self._last_block_time = time.monotonic()
             self._thread = threading.Thread(target=self._consume_loop, name="audio-capture", daemon=True)
             self._thread.start()
 
@@ -139,6 +151,7 @@ class AudioCapture:
                 return
             logger.info("stopping audio capture")
             self._stream = None
+            self._stopping = True
 
         if stream is not None:
             try:
@@ -168,6 +181,10 @@ class AudioCapture:
 
     def resume(self) -> None:
         self._paused = False
+        # The consumer received no blocks while paused; restart the dropout
+        # heartbeat baseline so resume does not read as a stall.
+        with self._lock:
+            self._last_block_time = time.monotonic()
         logger.info("audio capture resumed")
 
     def clear(self) -> None:
@@ -213,6 +230,7 @@ class AudioCapture:
                 logger.error("could not signal the audio consumer to stop")
 
     def _shutdown_thread(self) -> None:
+        self._stopping = True
         thread = self._thread
         stream, self._stream = self._stream, None
         if stream is not None:
@@ -231,11 +249,20 @@ class AudioCapture:
 
     # ------------------------------------------------------------------ #
     def _consume_loop(self) -> None:
+        # The microphone callback pushes blocks continuously, so a quiet
+        # queue means the device stopped delivering audio, not that the
+        # speaker paused. Poll with a timeout to detect that explicitly.
+        poll = max(0.05, min(0.5, self.config.dropout_timeout_s / 4.0))
         try:
             while True:
-                block = self._queue.get()
+                try:
+                    block = self._queue.get(timeout=poll)
+                except queue.Empty:
+                    self._check_heartbeat()
+                    continue
                 if block is None:
                     break
+                self._note_block_arrival()
                 self._process_item(block)
         except Exception:
             logger.exception("audio consumer crashed")
@@ -253,6 +280,45 @@ class AudioCapture:
             except Exception:
                 logger.exception("error while flushing the VAD segment")
             self.stats["dropped_chunks"] = self._dropped_chunks
+
+    def _note_block_arrival(self) -> None:
+        with self._lock:
+            self._last_block_time = time.monotonic()
+        if self._dropout_reported:
+            self._dropout_reported = False
+            logger.warning("microphone blocks resumed after a capture dropout")
+
+    def _check_heartbeat(self) -> None:
+        """Surface a silent/disconnected input device as a visible error.
+
+        Distinct from queue overflow: nothing is arriving at all. An open
+        utterance can then never complete, so it is aborted through the same
+        explicit discontinuity path as any other audio gap.
+        """
+        if self._stopping or self._paused or self._stream is None:
+            return
+        with self._lock:
+            quiet_s = time.monotonic() - self._last_block_time
+        active = getattr(self._stream, "active", True)
+        if active and quiet_s < self.config.dropout_timeout_s:
+            return
+        if self._dropout_reported:
+            return
+        self._dropout_reported = True
+        self.stats["dropouts"] = self.stats.get("dropouts", 0) + 1
+        self.last_error = (
+            f"no microphone input for {quiet_s:.1f}s"
+            + ("" if active else "; the stream reports inactive")
+            + " (device silent or disconnected)"
+        )
+        logger.error("audio capture stalled: %s", self.last_error)
+        if self.vad.in_speech:
+            self.vad.reset()
+            if self.on_discontinuity is not None:
+                try:
+                    self.on_discontinuity()
+                except Exception:
+                    logger.exception("on_discontinuity callback failed")
 
     def _process_item(self, block) -> None:
         if block is _PAUSE:
@@ -314,10 +380,14 @@ class AudioCapture:
                 except Exception:
                     logger.exception("on_speech_start callback failed")
         else:
-            logger.info("speech ended (%.2fs)", event.duration_s)
+            logger.info(
+                "speech ended (%.2fs%s)",
+                event.duration_s,
+                ", forced segment cut" if event.forced else "",
+            )
             if self.on_speech_end is not None:
                 try:
-                    self.on_speech_end(event.duration_s)
+                    self.on_speech_end(event.duration_s, event.forced)
                 except Exception:
                     logger.exception("on_speech_end callback failed")
 
@@ -326,6 +396,7 @@ class AudioCapture:
         stats = dict(self.stats)
         stats["dropped_chunks"] = self._dropped_chunks
         stats["vad_state"] = self.vad.state.value
+        stats["last_error"] = self.last_error or ""
         return stats
 
     @staticmethod

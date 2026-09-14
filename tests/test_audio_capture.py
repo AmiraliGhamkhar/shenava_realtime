@@ -1,6 +1,7 @@
 """Audio capture dispatch and shutdown (no real microphone needed)."""
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -30,7 +31,7 @@ def capture_with_recorders() -> tuple:
     )
     events = {"start": [], "end": [], "audio": []}
     capture.on_speech_start = lambda preroll: events["start"].append(len(preroll))
-    capture.on_speech_end = lambda duration: events["end"].append(duration)
+    capture.on_speech_end = lambda duration, forced=False: events["end"].append(duration)
     capture.on_audio = lambda chunk, in_speech: events["audio"].append((len(chunk), in_speech))
     return capture, events
 
@@ -66,7 +67,7 @@ def test_audio_callback_runs_before_boundary_events():
     order = []
     capture.on_audio = lambda chunk, in_speech: order.append("audio")
     capture.on_speech_start = lambda preroll: order.append("start")
-    capture.on_speech_end = lambda duration: order.append("end")
+    capture.on_speech_end = lambda duration, forced=False: order.append("end")
     for _ in range(20):
         capture._consume(block(0.05))
     # The streaming consumer sees the block before the segment boundary is
@@ -157,3 +158,105 @@ def test_missing_sounddevice_raises_on_start():
     capture = AudioCapture(AudioConfig())
     with pytest.raises(RuntimeError, match="sounddevice"):
         capture.start()
+
+
+# --------------------------------------------------------------------------- #
+# Forced segment cuts carry an explicit flag (never look like natural ends).
+# --------------------------------------------------------------------------- #
+def test_forced_cut_reports_forced_true_natural_end_false():
+    capture = AudioCapture(
+        AudioConfig(
+            sample_rate=SR,
+            chunk_size=BLOCK,
+            vad_min_speech_ms=64,
+            vad_max_speech_s=1.0,  # above the 700 ms endpoint silence
+            vad_pre_speech_ms=0,
+        )
+    )
+    ends = []
+    capture.on_speech_end = lambda duration, forced=False: ends.append(forced)
+    for _ in range(20):  # 1.28 s of speech > 1.0 s cap -> forced cut
+        capture._consume(block(0.05))
+    assert ends == [True]
+    for _ in range(16):  # 0.2 s residue + 0.7 s+ silence -> natural endpoint
+        capture._consume(block(0.001))
+    assert ends == [True, False]
+
+
+# --------------------------------------------------------------------------- #
+# Device dropout heartbeat: silence from the device is a visible error.
+# --------------------------------------------------------------------------- #
+def _live_capture(**overrides) -> AudioCapture:
+    config = AudioConfig(sample_rate=SR, chunk_size=BLOCK, dropout_timeout_s=0.2, **overrides)
+    capture = AudioCapture(config)
+    capture._stream = type("FakeStream", (), {"active": True})()  # stream "open"
+    with capture._lock:
+        capture._last_block_time = time.monotonic()
+    return capture
+
+
+def test_recent_blocks_are_never_a_dropout():
+    capture = _live_capture()
+    capture._check_heartbeat()
+    assert capture.stats.get("dropouts", 0) == 0
+    assert capture.last_error is None
+
+
+def test_silent_device_is_reported_exactly_once_and_aborts_open_utterance():
+    capture = _live_capture()
+    restarts = []
+    capture.on_discontinuity = lambda: restarts.append(True)
+    for _ in range(10):
+        capture._consume(block(0.05))  # open a speech segment
+    assert capture.is_speaking
+    with capture._lock:
+        capture._last_block_time -= 1.0  # simulate a long silent gap
+    capture._check_heartbeat()
+    assert capture.stats["dropouts"] == 1
+    assert capture.last_error and "silent or disconnected" in capture.last_error
+    assert capture.get_statistics()["last_error"] == capture.last_error
+    assert not capture.is_speaking  # open utterance aborted, not stalled
+    assert restarts == [True]
+    capture._check_heartbeat()  # one report per dropout episode
+    assert capture.stats["dropouts"] == 1
+
+
+def test_heartbeat_ignores_paused_stopping_and_closed_stream():
+    capture = _live_capture()
+    with capture._lock:
+        capture._last_block_time -= 60.0
+    capture._paused = True
+    capture._check_heartbeat()
+    assert capture.stats.get("dropouts", 0) == 0
+    capture._paused = False
+    capture._stream = None
+    capture._check_heartbeat()
+    assert capture.stats.get("dropouts", 0) == 0
+    capture._stream = type("FakeStream", (), {"active": True})()
+    capture._stopping = True
+    capture._check_heartbeat()
+    assert capture.stats.get("dropouts", 0) == 0
+
+
+def test_inactive_stream_is_reported_immediately():
+    capture = _live_capture()
+    capture._stream = type("FakeStream", (), {"active": False})()
+    capture._check_heartbeat()
+    assert capture.stats["dropouts"] == 1
+    assert "inactive" in capture.last_error
+
+
+def test_consumer_loop_reports_dropout_and_recovers():
+    capture = _live_capture()
+    capture.config.dropout_timeout_s = 0.15
+    capture._thread = threading.Thread(target=capture._consume_loop, name="audio-capture", daemon=True)
+    capture._thread.start()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and capture.stats.get("dropouts", 0) < 1:
+        time.sleep(0.02)
+    assert capture.stats.get("dropouts", 0) == 1, "silent device was not surfaced"
+    capture._queue.put(block(0.05))  # audio returns: recovery is logged...
+    capture._queue.put(None)  # ...then stop the consumer cleanly
+    capture._thread.join(timeout=3.0)
+    assert not capture._thread.is_alive()
+    assert capture._dropout_reported is False
