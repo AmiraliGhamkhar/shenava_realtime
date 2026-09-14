@@ -1,0 +1,5 @@
+-r requirements.txt
+sounddevice>=0.4.6,<1
+pynput>=1.7.6,<2
+# Optional Linux/macOS clipboard support:
+pyperclip>=1.8.2,<2

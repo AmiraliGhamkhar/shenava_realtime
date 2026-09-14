@@ -90,7 +90,7 @@ _VALUE_WORDS: Dict[str, int] = {**DIGITS, **TEENS, **TENS, **HUNDREDS}
 # number 1 when it is part of a longer phrase or when it quantifies a unit.
 _AMBIGUOUS_ONES = {"یک", "1"}
 
-_BP_RE = re.compile(r"(?<![\d/.])(\d{2,3})\s+(?:روی|بر\s+روی|به|خط|از)\s+(\d{2,3})(?![\d/.])")
+_BP_RE = re.compile(r"(?<![\d/.])(\d{2,3})\s+(?:روی|بر\s+روی|خط)\s+(\d{2,3})(?![\d/.])")
 _PERCENT_RE = re.compile(r"(\d)\s+(%|٪)")
 _DEGREE_RE = re.compile(r"(\d)\s+(°C|°F|°)")
 _STANDALONE_PERCENT_RE = re.compile(r"(\d)\s+درصد\b")
@@ -115,16 +115,29 @@ def parse_number_phrase(
     total = 0.0
     current = 0.0
     value_words = 0
+    last_value = 1000
+    last_scale = float("inf")
+    connected = True
     index = start
     count = len(words)
 
     while index < count:
         key = match_key(words[index])
         if key in _VALUE_WORDS:
-            current += _VALUE_WORDS[key]
+            value = _VALUE_WORDS[key]
+            if value_words and (not connected or value >= last_value):
+                break
+            current += value
+            last_value = value
+            connected = False
             value_words += 1
             index += 1
         elif key in SCALES:
+            if SCALES[key] >= last_scale:
+                break
+            last_scale = SCALES[key]
+            last_value = 1000
+            connected = True
             current = (current if current else 1) * SCALES[key]
             total += current
             current = 0.0
@@ -132,7 +145,8 @@ def parse_number_phrase(
             index += 1
         elif key == CONNECTOR:
             next_key = match_key(words[index + 1]) if index + 1 < count else ""
-            if next_key in _STARTERS or next_key == HALF:
+            if (next_key in _VALUE_WORDS and _VALUE_WORDS[next_key] < last_value) or next_key == HALF:
+                connected = True
                 index += 1
             else:
                 break
@@ -148,9 +162,9 @@ def parse_number_phrase(
 
     # Guard the article reading of "یک": keep the word unless it clearly
     # quantifies something numeric.
-    if value_words == 1 and match_key(words[start]) in _AMBIGUOUS_ONES:
+    if value_words == 1 and match_key(words[start]) in (_AMBIGUOUS_ONES | {"نه"}):
         next_key = match_key(words[index]) if index < count else ""
-        if not unit_tokens or next_key not in unit_tokens:
+        if next_key != "ممیز" and (not unit_tokens or next_key not in unit_tokens):
             return None
 
     return total + current, index
@@ -173,7 +187,8 @@ def convert_numbers(
         return text
 
     text = digits_to_ascii(text)
-    words: List[str] = text.split(" ")
+    text = re.sub(r"([،؛؟!?()])|(?<!\d)([.])|([.])(?!\d)", lambda m: " " + m.group() + " ", text)
+    words: List[str] = text.split()
     out: List[str] = []
     index = 0
     count = len(words)
@@ -188,10 +203,18 @@ def convert_numbers(
         out.append(format_number(value, digits))
 
     result = " ".join(word for word in out if word)
+    # Decimal marker: digit-by-digit fractions preserve leading zeroes.
+    result = re.sub(r"(\d+)\s+ممیز\s+((?:\d+\s+)*\d+)",
+                    lambda m: m[1] + "." + "".join(m[2].split()), result)
+    result = re.sub(r"\bمنفی\s+(\d+(?:\.\d+)?)", r"-\1", result)
+    result = re.sub(r"\bنیم(?=\s+(?:mg|mL|g|L|درصد|میلی))", "0.5", result)
+    result = re.sub(r"\s+([،؛؟!?).])", r"\1", result)
+    result = re.sub(r"([(])\s+", r"\1", result)
     result = _STANDALONE_PERCENT_RE.sub(r"\1%", result)
     result = _PERCENT_RE.sub(r"\1%", result)
     result = _DEGREE_RE.sub(r"\1\2", result)
-    return _BP_RE.sub(lambda match: _blood_pressure(match, digits), result)
+    result = _BP_RE.sub(lambda match: _blood_pressure(match, digits), result)
+    return result if digits == "ascii" else digits_to_persian(result)
 
 
 def _blood_pressure(match: "re.Match[str]", digits: str = "ascii") -> str:

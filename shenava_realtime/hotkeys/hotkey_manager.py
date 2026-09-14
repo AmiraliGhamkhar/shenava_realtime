@@ -40,6 +40,7 @@ class HotkeyManager:
 
     def __init__(self, config: Optional[HotkeyConfig] = None) -> None:
         self.config = config or HotkeyConfig()
+        self._running_bindings: set[str] = set()
         self.bindings: Dict[str, HotkeyBinding] = {}
         self._pressed: Set[str] = set()
         self._pressed_lock = threading.Lock()
@@ -146,6 +147,8 @@ class HotkeyManager:
             if name is None:
                 return
             with self._pressed_lock:
+                if name in self._pressed:
+                    return  # ignore OS key-repeat
                 self._pressed.add(name)
                 if name in _MODIFIER_KEYS:
                     return
@@ -153,6 +156,10 @@ class HotkeyManager:
                 binding = self.bindings.get(combo)
             if binding is None or not binding.is_active:
                 return
+            with self._pressed_lock:
+                if combo in self._running_bindings:
+                    return
+                self._running_bindings.add(combo)
             self.stats["presses"] += 1
             logger.debug("hotkey pressed: %s", combo)
             threading.Thread(
@@ -202,6 +209,9 @@ class HotkeyManager:
         except Exception:
             self.stats["failed"] += 1
             logger.exception("hotkey callback %s failed", binding.description)
+        finally:
+            with self._pressed_lock:
+                self._running_bindings.discard(binding.key_combo)
 
 
 def normalize_combo(key_combo: str) -> str:

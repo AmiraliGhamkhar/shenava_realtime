@@ -46,17 +46,21 @@ logger = logging.getLogger("shenava.app")
 class ShenavaApp:
     """Wires the components together and owns the application lifecycle."""
 
-    def __init__(self, config: Optional[AppConfig] = None) -> None:
+    def __init__(self, config: Optional[AppConfig] = None, *, backend=None, audio_capture=None) -> None:
         self.config = config or AppConfig.from_env()
         setup_logging(self.config.log_level, log_file=Path("app.log"))
 
+        self.clinical = None
+        if self.config.clinical_sqlite or self.config.clinical_jsonl:
+            from shenava_realtime.clinical import ClinicalWorker
+            self.clinical = ClinicalWorker(self.config.clinical_sqlite, self.config.clinical_jsonl)
         self.performance = PerformanceMonitor()
         self.clipboard = ClipboardManager()
         self._shutdown = threading.Event()
         self._stopping = threading.Lock()
 
         logger.info("initialising Shenava Real-time ASR (output mode: %s)", self.config.output_mode.value)
-        self.asr = RealtimeASR(self.config)
+        self.asr = RealtimeASR(self.config, backend=backend, audio_capture=audio_capture)
         self.overlay = OverlayManager(self.config.overlay) if self.config.overlay.enabled else None
         self.injector = TextInjector(self.config.injector) if self.config.injector.enabled else None
         self.hotkeys = HotkeyManager(self.config.hotkeys)
@@ -65,7 +69,7 @@ class ShenavaApp:
         self.asr.on_text_delta = self._on_text_delta
         self.asr.on_utterance_end = self._on_utterance_end
         if self.injector is not None:
-            self.injector.on_failed = lambda text: logger.warning("injection failed: %.40s…", text)
+            self.injector.on_failed = lambda text: logger.warning("injection failed (%d characters)", len(text))
 
         self._setup_hotkeys()
 
@@ -86,6 +90,8 @@ class ShenavaApp:
     # ------------------------------------------------------------------ #
     def start(self) -> None:
         try:
+            if self.clinical:
+                self.clinical.start()
             self.hotkeys.start()
             if self.overlay is not None and not self.overlay.start():
                 logger.error("overlay unavailable; continuing without it")
@@ -116,6 +122,8 @@ class ShenavaApp:
         try:
             logger.info("stopping…")
             self.asr.stop()
+            if self.clinical:
+                self.clinical.stop()
             if self.injector is not None:
                 self.injector.stop()
             if self.overlay is not None:
@@ -141,11 +149,10 @@ class ShenavaApp:
     def _print_statistics(self) -> None:
         stats = self.asr.get_statistics()
         logger.info(
-            "session: %d utterances, %d decodes, %.1fs audio, avg confidence %.2f",
+            "session: %d utterances, %d decodes, %.1fs audio",
             int(stats["utterances"]),
             int(stats["decodes"]),
             float(stats["total_audio_duration"]),
-            float(stats["average_confidence"]),
         )
         if self.injector is not None:
             injector_stats = self.injector.get_statistics()
@@ -177,6 +184,8 @@ class ShenavaApp:
             self.overlay.update_text(self.asr.pipeline.committed_text, confidence)
 
     def _on_utterance_end(self, text: str, confidence: float) -> None:
+        if self.clinical and not self.clinical.submit(text):
+            logger.error("Completed utterance was not accepted by clinical output")
         if self.overlay is not None:
             self.overlay.update_text(text, confidence)
         if self.config.output_mode is OutputMode.CLIPBOARD:
@@ -222,10 +231,16 @@ class ShenavaApp:
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Shenava real-time Persian ASR")
+    parser.add_argument("--self-test", action="store_true", help="headless synthetic streaming/startup check; not real recognition")
+    parser.add_argument("--clinical-sqlite", help="optional SQLite output file")
+    parser.add_argument("--clinical-jsonl", help="optional JSONL output file")
+    parser.add_argument("--right-context", type=int, choices=[0, 1, 6, 13])
+    parser.add_argument("--require-streaming", action="store_true")
+    parser.add_argument("--allow-download", action="store_true", help="explicitly permit model provisioning over network")
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
     parser.add_argument("--model", default=None, help="path to a local .nemo checkpoint")
     parser.add_argument("--device", default=None, help="torch device: auto, cpu, cuda, cuda:1")
-    parser.add_argument("--decoder", default=None, help="decoder type: ctc (default) or rnnt")
+    parser.add_argument("--decoder", default=None, choices=["ctc"], help="greedy CTC decoder")
     parser.add_argument("--threads", type=int, default=None, help="torch CPU thread count")
     parser.add_argument("--output-mode", choices=[mode.value for mode in OutputMode], default=None)
     parser.add_argument("--audio-device", default=None, help="input device index or name")
@@ -257,18 +272,38 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         config.injector.enabled = False
     if args.log_level:
         config.log_level = args.log_level
+    if args.clinical_sqlite:
+        config.clinical_sqlite = args.clinical_sqlite
+    if args.clinical_jsonl:
+        config.clinical_jsonl = args.clinical_jsonl
+    if args.right_context is not None:
+        config.asr.right_context = args.right_context
+    if args.allow_download:
+        config.asr.allow_download = True
+    if args.require_streaming:
+        config.asr.require_streaming = True
+    config.asr.__post_init__()
+    config.audio.__post_init__()
     return config
 
 
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
 
+    if args.self_test:
+        from tools.verify_pipeline import main as verify
+        return verify(["--self-test"])
+
     if args.list_devices:
         for device in AudioCapture.list_devices():
             print(f"[{device['index']}] {device['name']} ({device['channels']} ch)")
         return 0
 
-    config = build_config(args)
+    try:
+        config = build_config(args)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     if args.save_config:
         ConfigManager.save(config, args.save_config)
         print(f"config written to {args.save_config}")
@@ -276,7 +311,7 @@ def main(argv: Optional[list] = None) -> int:
 
     try:
         app = ShenavaApp(config)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         # Missing model stack / unusable microphone: report without a traceback.
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -287,7 +322,11 @@ def main(argv: Optional[list] = None) -> int:
                 signal.signal(signal_number, lambda *_: app.request_shutdown())
             except (ValueError, OSError):
                 logger.debug("%s handler could not be installed", signal_name)
-    app.start()
+    try:
+        app.start()
+    except (RuntimeError, OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

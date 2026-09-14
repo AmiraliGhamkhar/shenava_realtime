@@ -7,10 +7,6 @@ environment.
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-
 from .config import (  # noqa: E402
     ASRConfig,
     AppConfig,

@@ -24,7 +24,7 @@ import queue
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, Optional
 
@@ -44,9 +44,6 @@ class InjectionResult(str, Enum):
 @dataclass
 class InjectionTask:
     text: str
-    created_at: float = field(default_factory=time.time)
-    attempts: int = 0
-    max_attempts: int = 2
 
 
 class TextInjector:
@@ -64,7 +61,7 @@ class TextInjector:
         self.mode: InjectorMode = self._resolve_mode(self.config.mode)
 
         self.is_active: bool = self.config.enabled
-        self._queue: "queue.Queue[Optional[InjectionTask]]" = queue.Queue()
+        self._queue: "queue.Queue[Optional[InjectionTask]]" = queue.Queue(maxsize=64)
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.RLock()
         self._last_text = ""
@@ -108,12 +105,23 @@ class TextInjector:
     def stop(self) -> None:
         with self._lock:
             thread = self._thread
-            self._thread = None
         if thread is not None:
-            self._queue.put(None)
+            try:
+                self._queue.put(None, timeout=1)
+            except queue.Full:
+                self.is_active = False
+                while not self._queue.empty():
+                    try:
+                        self._queue.get_nowait()
+                        self._queue.task_done()
+                    except queue.Empty:
+                        break
+                self._queue.put_nowait(None)
             thread.join(timeout=3.0)
             if thread.is_alive():
-                logger.warning("text injector thread did not exit within 3s")
+                logger.warning("text injector thread did not exit within 3s; restart blocked")
+            else:
+                self._thread = None
             logger.info("text injector stopped")
 
     def toggle(self) -> None:
@@ -136,31 +144,45 @@ class TextInjector:
             return False
         if not text or not text.strip():
             return False
-        self._queue.put(InjectionTask(text=text))
-        return True
+        try:
+            self._queue.put_nowait(InjectionTask(text=text))
+            return True
+        except queue.Full:
+            logger.error("Injection queue full; disabling injection to avoid incomplete text")
+            self.is_active = False
+            self._notify(self.on_failed, text) if self.on_failed else None
+            return False
 
     def inject_now(self, text: str) -> InjectionResult:
         """Inject synchronously (used by tests and by ``--print``-style flows)."""
         return self._perform(text)
 
     def flush(self, timeout: float = 2.0) -> None:
-        deadline = time.time() + timeout
-        while not self._queue.empty() and time.time() < deadline:
-            time.sleep(0.01)
+        deadline = time.monotonic() + timeout
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                self._queue.all_tasks_done.wait(remaining)
 
     # ------------------------------------------------------------------ #
     def _loop(self) -> None:
         while True:
             task = self._queue.get()
-            if task is None:
-                break
-            result = self._perform(task.text, task=task)
-            if result is InjectionResult.FAILED and task.attempts < task.max_attempts:
-                task.attempts += 1
-                time.sleep(0.25)
-                self._queue.put(task)
+            try:
+                if task is None:
+                    break
+                self._perform(task.text)
+            except Exception:
+                logger.exception("Injection backend failed; disabling injection")
+                self.is_active = False
+            finally:
+                self._queue.task_done()
+            # Never retry an irreversible paste/type operation: it may have
+            # partially succeeded, and requeuing also reorders dictation.
 
-    def _perform(self, text: str, task: Optional[InjectionTask] = None) -> InjectionResult:
+    def _perform(self, text: str) -> InjectionResult:
         text = text or ""
         if not text.strip():
             return InjectionResult.SKIPPED
@@ -169,7 +191,7 @@ class TextInjector:
 
         if self.config.skip_consecutive_duplicates and text == self._last_text:
             self.stats["skipped"] += 1
-            logger.debug("skipping duplicate injection: %r", text[:40])
+            logger.debug("skipping duplicate injection")
             return InjectionResult.SKIPPED
 
         self.stats["injections"] += 1
@@ -206,6 +228,7 @@ class TextInjector:
         if ok:
             self._finish_extras()
         if self.config.restore_clipboard:
+            time.sleep(max(0.05, self.config.delay_after_paste_s))
             self.clipboard.restore(previous)
         return ok
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 from collections import deque
@@ -20,13 +21,13 @@ def setup_logging(level: str = "INFO", log_file: Optional[Path] = None) -> None:
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
-    stream = logging.StreamHandler(sys.stdout)
+    stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
     root.addHandler(stream)
 
     if log_file:
         try:
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler = RotatingFileHandler(log_file, maxBytes=2_000_000, backupCount=2, encoding="utf-8")
             file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
             root.addHandler(file_handler)
         except OSError:

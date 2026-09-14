@@ -1,243 +1,252 @@
-# Shenava Real-time ASR
+# Shenava realtime Persian medical transcription
 
-Real-time Persian speech recognition with a floating overlay, global hotkeys and
-automatic text injection into the focused application. Powered by the
-[Shenava-Koochik](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0) NeMo
-FastConformer checkpoint, decoded through its **CTC** head.
-
-Everything downstream of the acoustic model is **deterministic**: a finite-state
-(trie) rewriter for medical terms and units, a rule-based Persian normalizer and
-a table-driven spoken-number converter. There is no LLM, no embedding model, no
-vector database, no fuzzy matching, and no network service in the pipeline.
+A small local-first Python 3.10+ desktop transcription pipeline. No LLM,
+embeddings, vector database, edit-distance or semantic matching.
 
 ```text
-Microphone
-  → Audio capture (16 kHz mono, bounded queue)
-  → RMS VAD (speech/silence hysteresis, pre-roll)
-  → Shenava streaming CTC (cache-aware when the checkpoint supports it,
-                           otherwise a bounded sliding window)
-  → Transcript stabilization (committed_text / current_partial)
-  → FST post-processing (normalization, medical terms, units, numbers, punctuation)
-  → Stable text deltas
-  → Clipboard (Windows, Unicode) / keyboard injection / overlay / console
+16 kHz mono audio → RMS VAD → Shenava cache-aware greedy CTC
+  → transcript stabilization → Persian normalization → medical Trie/FST
+  → numbers/units/punctuation → stable text → overlay / keyboard / clipboard
+                                         └→ optional dictionary NER → rules
+                                             → JSONL / SQLite
 ```
 
-## Install
+**Clinical safety:** output is dictated text and extracted mentions, not a
+verified medical record. Review negation, drug names, doses and abnormal values.
+ASR and dictionary errors are possible. Clinical records always carry
+`review_required: true`. This is not a validated medical device.
 
-Python 3.10+. Two dependency sets keep the install small:
+## Install and provision
 
 ```bash
-# 1. runtime: capture, overlay, hotkeys, injection
-pip install -r requirements.txt
-
-# 2. the ASR model stack (torch + NeMo). Only needed to actually recognise speech.
-pip install -r requirements-asr.txt
-
-# optional: run the tests
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
+pytest -q
+python main.py --self-test
 ```
 
-The bundled torch wheel may be CPU-only; the app auto-detects CUDA and uses it
-when a CUDA-enabled torch is installed, otherwise it runs on CPU.
+The core/test dependencies are NumPy and pytest. The self-test uses **synthetic
+speech activity and a synthetic ASR backend**, but real capture/VAD orchestration,
+ASR worker, stabilization, normalization and extraction. It does not measure
+recognition accuracy or test a microphone.
 
-## Model
+For recognition, install matching PyTorch/torchaudio wheels for your platform,
+then the ASR stack. The native adapter targets NeMo **2.4.0** and the requirements
+specify a matching Torch/torchaudio 2.7.1 pair. Use a supported Linux/CUDA or CPU
+environment; availability of NeMo's compiled dependencies on native Windows
+varies. Keep the desktop process on a machine with microphone/display access.
 
-The engine prefers a **local** checkpoint and only falls back to a Hugging Face
-download when the file is missing.
+```bash
+pip install -r requirements-asr.txt
+pip install -r requirements-desktop.txt
+```
 
-| Setting | Default |
-|---|---|
-| `SHENAVA_MODEL_PATH` | `./shenava-koochik/shenava-koochik-v1.0.nemo` |
-| `SHENAVA_MODEL_NAME` | `Reza2kn/Shenava-Koochik-v1.0` |
-| `SHENAVA_DEVICE` | `auto` (`cpu` / `cuda` / `cuda:1`) |
-| `SHENAVA_DECODER` | `ctc` |
-| `SHENAVA_NUM_THREADS` | `4` |
+Desktop requirements include sounddevice/PortAudio, pynput and pyperclip. Linux
+may also need the OS packages for PortAudio, Tk and an X11 clipboard utility.
+Pynput/global shortcuts and injection may be restricted by Wayland or OS privacy
+permissions. An Arena/browser sandbox cannot access your local microphone or
+inject into your local desktop; this repository is not a browser application.
 
-The repository's `.env` is read on start (a tiny built-in loader; no
-`python-dotenv` dependency), and environment variables always win over it.
+### Models
+
+Primary: **Shenava Koochik v1.0, 114M**, hybrid FastConformer with CTC decoding.
+The bundled [model card](shenava-koochik/README.md) documents contexts
+`[70,13]`, `[70,6]`, `[70,1]`, `[70,0]` and model provenance.
+
+Provision the trusted `.nemo` checkpoint from
+[Reza2kn/Shenava-Koochik-v1.0](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0)
+onto local storage, then set `SHENAVA_MODEL_PATH` or use `--model`. The default is
+`shenava-koochik/shenava-koochik-v1.0.nemo`. **Weights are not included.**
+NeMo checkpoints are executable serialization artifacts: do not load untrusted
+files. Verify the publisher's checksum when provisioning.
+
+Missing local files fail clearly **before importing the model stack**. There is
+no automatic network fallback. `--allow-download` / `SHENAVA_ALLOW_DOWNLOAD=1`
+explicitly enables provisioning with `ASRModel.from_pretrained(model_name)`;
+normal deployed inference should leave this disabled.
+
+For a smaller model, select a locally provisioned Shenava Rizeh (32M) or
+Rizeh-Pizeh (6.9M) `.nemo` file. Streaming support is checked from the **actual
+encoder metadata**, not assumed from its name. No automatic second checkpoint
+is loaded, avoiding doubled RAM and surprising model changes.
 
 ## Run
 
 ```bash
-python main.py                      # foreground
-python run_app.py                   # detached, logs to app.log
-python main.py --list-devices       # enumerate input devices
-python main.py --device cpu --threads 8 --output-mode inject
-python main.py --no-overlay --no-inject --output-mode console
-python main.py --save-config config.json
-python main.py --help
+python main.py --model /models/shenava-koochik-v1.0.nemo --device cpu
+# Strict native-streaming mode (recommended for deployment validation):
+python main.py --model /models/shenava-koochik-v1.0.nemo --require-streaming \
+  --right-context 13 --output-mode console --no-overlay --no-inject
+python main.py --list-devices
 ```
 
-Startup takes ~30 s while the 460 MB checkpoint loads. Speak, and the recognised
-text appears in the overlay and is inserted into the focused window.
+Output modes remain `both` (default), `overlay`, `inject`, `clipboard`, `console`.
+The overlay shows live partials. **Injection and clinical extraction wait until
+an endpoint by default**: neither repeated hypothesis agreement nor a fixed
+word holdback can guarantee a number/medical phrase will not be rewritten.
+For example `سی` can become `سی و پنج` or part of `سی ای بی جی`.
 
-## Hotkeys
+Hotkeys remain:
 
-| Combo | Action |
+| Shortcut | Action |
 |---|---|
-| `Ctrl+Alt+R` | Pause / resume recording |
-| `Ctrl+Alt+O` | Show / hide the overlay |
-| `Ctrl+Alt+I` | Enable / disable text injection |
-| `Ctrl+Alt+C` | Clear the current transcript |
-| `Ctrl+Alt+Q` | Quit |
+| Ctrl+Alt+R | pause/resume (pause flushes the current segment) |
+| Ctrl+Alt+O | toggle overlay |
+| Ctrl+Alt+I | toggle injection |
+| Ctrl+Alt+C | clear transcript/abort current segment |
+| Ctrl+Alt+Q | shutdown |
 
-## Output modes (`--output-mode` / `SHENAVA_OUTPUT_MODE`)
+Ctrl+C / SIGTERM also request orderly shutdown. `run_app.py` remains a convenience
+launcher for detached desktop use; prefer the foreground command while debugging.
 
-| Mode | Behaviour |
-|---|---|
-| `both` | overlay + injection (default) |
-| `overlay` | overlay only |
-| `inject` | inject only |
-| `clipboard` | copy each finished utterance to the clipboard |
-| `console` | print to the terminal |
+## Streaming behavior and tuning
 
-Injection mode (`SHENAVA_INJECTOR_MODE`): `auto` (default) picks the **clipboard
-paste** path on Windows — the only reliable way to insert Persian text, since
-simulated keystrokes go through the active keyboard layout — and the keyboard
-path elsewhere. The previous clipboard content is saved and restored after each
-paste.
+- Native path uses `encoder.get_initial_cache_state()` and
+  `model.conformer_stream_step()`, with encoder channel/time/length caches,
+  previous CTC predictions, pre-encoder feature overlap and an explicit final
+  flush (`keep_all_outputs=True`). There is **no repeated encoder window**.
+- The frontend recomputes only bounded hop-aligned STFT overlap, waits for stable
+  right-edge features, and applies NeMo online chunk normalization. It requires
+  centered STFT with no frame splicing; unsupported frontend configuration is an
+  explicit initialization error. Online normalization may differ in accuracy
+  from the publisher's offline evaluation—measure on your own audio.
+- Default right context is 13 for quality. Choose 6, 1 or 0 for less lookahead.
+  Koochik's encoder step is approximately 80 ms; this is **not** an end-to-end
+  latency guarantee. NeMo metadata determines chunk/shift/cache sizes.
+- `partial_interval_s` (default 0.5 s) batches new mic blocks before handing them
+  to the native session; it does not override encoder lookahead.
+- Unsupported/offline checkpoints use **endpoint-only CTC**, once per segment,
+  with an explicit startup warning. `require_streaming=true` rejects this mode.
+  A broken native adapter does not silently fall back.
+- Default VAD: onset RMS .015, offset .008, 250 ms onset confirmation, 700 ms
+  endpoint silence, 320 ms pre-roll, 20 s maximum segment. Tune RMS thresholds
+  to your microphone's gain/noise; this detector is not speech classification.
+  Continuous speech creates explicit END/START boundaries without replaying
+  audio. Phrases crossing a forced boundary may lose linguistic context.
+- ASR segment cap: 22 s including pre-roll. Raw/features/caches/hypotheses are
+  reset at each endpoint. Audio and ASR queues default to 32 blocks (~2 s each
+  at 64 ms/block); overlay/injector queues are 64 items, clinical queue 32.
+- An overrun aborts incomplete recognition instead of joining audio across a
+  gap. Check logged errors and `overruns`; use faster hardware, lower lookahead
+  or a smaller model rather than hiding overload with a huge queue.
+- Model errors abort the affected utterance and allow the next segment to
+  recover. A worker that exceeds the shutdown timeout retains its live handle,
+  preventing a second worker from starting over it. Python cannot forcibly
+  interrupt a hung CUDA/driver call; terminate the process if it never returns.
+- In-memory session text is a bounded rolling tail (20,000 characters/200
+  segment history), **not an unlimited archival record**.
 
-## Post-processing
-
-Deterministic and idempotent, in this order (see `shenava_realtime/postprocessor.py`):
-
-1. **Persian/Arabic Unicode normalization** — `ي→ی`, `ك→ک`, `أ/إ/ٱ→ا`, `ة→ه`,
-   harakat/tatweel/ZWJ removal, Arabic-Indic and Persian digits, whitespace and
-   punctuation spacing, ZWNJ for clitics (`می‌رود`, `کتاب‌ها`).
-2. **FST phrase rewriting** — medical terms, abbreviations and units
-   (`shenava_realtime/fst.py` + `lexicon.py`).
-3. **Repetition removal** — consecutive duplicated words (a common CTC artifact).
-4. **Spoken numbers** — digits, `%`, `°`, blood-pressure ratios.
-5. **Spacing/punctuation** tidy-up.
-
-| Spoken | Output |
-|---|---|
-| `کابج` / `سی ای بی جی` | `CABG` |
-| `پی سی آی` | `PCI` |
-| `پنج میلی گرم` | `5 mg` |
-| `سی و پنج درصد` | `35%` |
-| `صد و بیست روی هشتاد` | `120/80` |
-| `ضربان هفتاد و پنج بار در دقیقه` | `ضربان 75 bpm` |
-| `دمای بدن سی و هشت درجه سانتیگراد` | `دمای بدن 38°C` |
-
-Add your own vocabulary without touching code:
-
-```python
-from shenava_realtime.postprocessor import PostProcessor
-
-PostProcessor(extra_terms={"آزیترومایسین": "azithromycin"})
-```
-
-### Why a Python trie instead of Pynini/OpenFst?
-
-`pynini` needs an OpenFst C++ toolchain and has no reliable Windows wheels, which
-conflicts with the "minimal, offline, Windows-first" goal. `fst.py` implements
-the same thing the rules need — a deterministic automaton over word tokens with
-longest-match semantics and an output string per accepting state — in a single
-120-line module with no dependencies. The rule tables are plain data, so they
-can be compiled by Pynini later without changing any logic. No fuzzy matching, no edit distance, no
-embeddings.
-
-## Configuration
-
-Precedence: **CLI flags → environment → `--config` JSON → defaults**.
+### Configuration
 
 ```bash
-python main.py --save-config config.json   # dump every knob
+python main.py --save-config config.json
 python main.py --config config.json
 ```
 
-Environment variables: `SHENAVA_MODEL_PATH`, `SHENAVA_MODEL_NAME`,
-`SHENAVA_DEVICE`, `SHENAVA_DECODER`, `SHENAVA_NUM_THREADS`,
-`SHENAVA_PARTIAL_INTERVAL_S`, `SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`,
-`SHENAVA_AUDIO_DEVICE`, `SHENAVA_LOG_LEVEL`, `SHENAVA_DEBUG`.
+Precedence: defaults → JSON → `.env`/exported environment → CLI. Exported values
+win over `.env`. Useful environment variables:
 
-Tuning that matters in practice (`shenava_realtime/config.py`):
+`SHENAVA_MODEL_PATH`, `SHENAVA_MODEL_NAME`, `SHENAVA_DEVICE`,
+`SHENAVA_NUM_THREADS`, `SHENAVA_RIGHT_CONTEXT`, `SHENAVA_PARTIAL_INTERVAL_S`,
+`SHENAVA_REQUIRE_STREAMING`, `SHENAVA_ALLOW_DOWNLOAD`, `SHENAVA_AUDIO_DEVICE`,
+`SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`, `SHENAVA_LOG_LEVEL`.
 
-| Key | Default | Meaning |
-|---|---|---|
-| `audio.vad_onset_rms` / `vad_offset_rms` | `0.015` / `0.008` | hysteresis band; raise both in a noisy room |
-| `audio.vad_min_silence_ms` | `700` | silence that ends an utterance |
-| `audio.vad_pre_speech_ms` | `320` | pre-roll kept so word starts are not clipped |
-| `asr.partial_interval_s` | `0.5` | how often a partial decode runs |
-| `asr.left_context_s` / `max_window_s` | `2.0` / `10.0` | streaming window size |
-| `asr.holdback_words` | `2` | words kept un-committed until they stop changing |
-| `postprocess.digits` | `ascii` | `persian` for ۱۲۰/۸۰ |
+`SHENAVA_DECODER` accepts only `ctc`. Invalid numeric ranges are rejected.
+JSON exposes the VAD, UI and optional output settings in `config.py`.
+`commit_on_endpoint=false` retains an experimental early-commit mode for API
+compatibility; it cannot retract a committed prefix and is not recommended for
+medical injection. Conflicting rewritten tails are suppressed, not re-injected.
 
-## Architecture
+Compatibility: callbacks still accept `(text, confidence)` and decode results
+retain their second numeric slot, but the production backend always supplies
+**0.0 = unknown**. There is no calibrated confidence estimator or display.
+`confidence_threshold`, `show_confidence`, `left_context_s`, `max_window_s` are
+legacy config fields with no runtime effect. Heuristic confidence functions and
+the unsafe window decoder were removed. Consecutive-word deletion and injector
+text-equality deduplication are disabled by default: legitimate repetitions must
+not be deleted. The FST/stabilizer handle ASR output deterministically instead.
 
-| Module | Responsibility |
-|---|---|
-| `audio_capture.py` | PortAudio callback → bounded queue → single consumer thread → VAD |
-| `vad.py` | RMS state machine (SILENCE → PENDING → SPEECH) with pre-roll and flush |
-| `asr_backend.py` | lazy NeMo loading, CTC decode, score → confidence, cache-aware stream adapter |
-| `streaming.py` | `CacheAwareDecoder` / `WindowedDecoder` — bounded work per step |
-| `stabilizer.py` | `committed_text` / `current_partial`, prefix-only commits |
-| `pipeline.py` | decoder → stabilizer → FST → **deltas** (emitted exactly once) |
-| `postprocessor.py`, `fst.py`, `lexicon.py`, `fa_numbers.py`, `text_normalize.py` | deterministic text layer |
-| `realtime_engine.py` | one worker thread that owns the model and the pipeline |
-| `injector/` | clipboard (ctypes, CF_UNICODETEXT) and keyboard (pynput) backends |
-| `overlay/` | Tk overlay; every mutation is marshalled onto the Tk thread |
-| `hotkeys/` | pynput listener, callbacks dispatched off the listener thread |
+## Deterministic text processing
 
-Threading rules the code follows:
+Rules in `lexicon.py`, longest-match token trie in `fst.py`, normalization in
+`text_normalize.py`, numeric grammar in `fa_numbers.py`.
 
-* the audio callback only copies and enqueues — it never blocks on inference;
-* exactly one thread touches the model, the stabilizer and the post-processor;
-* Tk widgets are only touched on the Tk thread;
-* every thread has an explicit stop path (sentinel + `join` with a timeout), and
-  an open utterance is flushed on shutdown.
-
-## Tests
-
-The suite runs **without** torch, NeMo, sounddevice, pynput or a GPU — the model
-is replaced by stubs (`tests/fakes.py`), and one test asserts that no heavy
-module leaks into `sys.modules`.
-
-```bash
-python -m compileall .
-pytest
+```text
+سي اي بي جي                  → CABG
+پنج میلی گرم در دسی لیتر     → 5 mg/dL
+دو و نیم میلی گرم            → 2.5 mg
+سه ممیز صفر پنج میلی گرم     → 3.05 mg
+فشار خون صد و بیست روی هشتاد → BP 120/80
+نه درد دارد نه تب            → نه درد دارد نه تب
 ```
 
-Covered: Persian normalization, medical terms, units, spoken numbers, blood
-pressure, transcript stabilization, VAD transitions, streaming window bounds,
-delta emission (no duplicates), injection dedupe, configuration and clean
-shutdown.
+Arabic/Persian letter variants, digit styles, Unicode marks, ZWNJ, Persian/Latin
+acronyms, punctuation and explicit units are handled without fuzzy matching.
+Unknown text is preserved. Dictionary replacements retain punctuation and
+cannot match across sentence punctuation. Decimal punctuation is not separated.
+Numbers require an ordered grammar instead of summing adjacent number words.
+General `به` / `از` phrases are no longer guessed to be blood pressure. Existing
+explicit numeric ratios are retained. This is deliberately a small grammar,
+not full Persian language understanding; extend it with reviewed examples/tests.
 
-## Development
+Custom terminology: `PostProcessor(extra_terms={"spoken form": "canonical"})`.
+Conflicting trie rules raise rather than silently replacing each other.
+
+## Optional clinical extraction / persistence
 
 ```bash
-python tools/profile_asr.py --seconds 1 2 5 10 --threads 4 --streaming
+python main.py --model /models/shenava-koochik-v1.0.nemo \
+  --clinical-sqlite clinical.sqlite --clinical-jsonl clinical.jsonl
 ```
 
-prints offline decode latency/RTF per segment length and the streaming window
-cost, using the configured checkpoint.
+Without these flags/config paths, no clinical worker or database is created.
+`clinical.py` is independently usable: `DictionaryNER.extract(text)` and
+`extract_record(text)`. It detects only exact listed entity phrases, explicit
+adjacent negation, measurements with explicit units, and BP pairs. JSON retains
+source text and character offsets. It **does not infer diagnoses, medication-dose
+links, unspecified units or missing values**. Unspecified assertion is not a
+positive diagnosis. Add domain vocabulary through `DictionaryNER(terms=...)`.
 
-## Troubleshooting
+SQLite uses parameterized inserts and one transaction per completed utterance.
+JSONL appends one record per line. These independent sinks are not a distributed
+atomic transaction; disk errors are explicit and do not block ASR. Queue overflow
+reports an unstored record. Inspect logs and reconcile against the reviewed
+transcript; neither sink promises delivery after process termination.
 
-- **No text in the overlay** — the overlay auto-hides after
-  `overlay.auto_hide_delay` seconds of silence and re-shows on the next result.
-- **Hotkeys do nothing** — another application may own the combo; pynput is
-  required and is checked at startup.
-- **Garbled Persian in the target app** — use clipboard injection
-  (`SHENAVA_INJECTOR_MODE=clipboard`); it is the default on Windows.
-- **Console shows `?` instead of Persian** — `main.py` forces UTF-8 stdio; in
-  some terminals also set `PYTHONIOENCODING=utf-8`.
-- **Nothing is recognised in a noisy room** — raise
-  `audio.vad_onset_rms`/`vad_offset_rms` (see `tools/profile_asr.py` and the
-  RMS levels in the debug log).
+**Privacy:** transcript saving and clinical persistence are opt-in. Console,
+clipboard and injection intentionally expose text to the selected destination.
+Routine logs record lengths/timing, not transcript contents, and `app.log` rotates.
+SQLite/JSONL are plaintext; use restricted permissions, encrypted storage,
+retention/deletion policies and consent. Files grow on disk until you archive or
+delete them; there is no hidden retention service. Runtime/model files are ignored
+by Git. Third-party NeMo logs should also be audited before handling patient data.
 
-## Known limitations
+## Verification and deployment gate
 
-- Cache-aware streaming is used only when the checkpoint ships a NeMo streaming
-  config; the Shenava FP32 source checkpoint does not, so the bounded sliding
-  window is the default path (constant work per step, but not truly cache-aware).
-- The stabilizer cannot retract text that was already injected; if the final
-  decode rewrites a committed word, the divergence is logged and the new tail is
-  appended.
-- `holdback_words` trades latency for stability: raise it in noisy conditions,
-  lower it for snappier output.
-- Unit/term rewriting is exact-match by design; unseen spellings need a new
-  entry in `lexicon.py`.
-- The overlay and the injection backends are Windows-oriented (Tk overlay,
-  Win32 clipboard); Linux/macOS work through pynput and, optionally, pyperclip.
+```bash
+pytest -q
+python main.py --self-test
+python tools/verify_pipeline.py --model /models/shenava-koochik-v1.0.nemo \
+  --wav /data/consented-persian-sample.wav --device cpu --right-context 13
+```
+
+Replay requires PCM16, mono, 16 kHz WAV and runs at microphone speed. It uses the
+real backend unless `--self-test` is explicitly supplied. Native streaming is
+required unless `--allow-endpoint` is passed. Output reports errors, overruns,
+text and extracted JSON. `tools/profile_asr.py --streaming` can measure model
+costs on synthetic noise, but is not an accuracy benchmark.
+
+**Verification in this checkout:** the lightweight suite and synthetic headless
+startup/replay pass; native-cache tests use a tensor/model double. Real NeMo
+checkpoint compatibility, microphone/desktop behavior, Persian WER and CPU/GPU
+latency have **not** been verified here: weights and NeMo are absent, and the CPU
+PyTorch download attempt failed with a TLS/network error. Do not treat passing
+synthetic tests as production model certification. Before deployment, run real
+WAV/microphone tests on your hardware, test all chosen contexts and smaller
+checkpoints, confirm no overruns, and review representative medical dictations.
+
+See [the inspection and change notes](docs/REVIEW.md) for the original defects
+and remaining limitations.

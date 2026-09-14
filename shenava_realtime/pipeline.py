@@ -60,7 +60,10 @@ class TranscriptionPipeline:
         postprocessor: Optional[PostProcessor] = None,
         stabilizer: Optional[TranscriptStabilizer] = None,
         holdback_words: int = 2,
+        commit_on_endpoint: bool = True,
     ) -> None:
+        self.commit_on_endpoint = commit_on_endpoint
+        self._latest = ""
         self.decoder = decoder
         self.postprocessor = postprocessor or PostProcessor()
         self.stabilizer = stabilizer or TranscriptStabilizer(StabilizerConfig(holdback_words=holdback_words))
@@ -88,7 +91,7 @@ class TranscriptionPipeline:
     @property
     def partial_text(self) -> str:
         """Live view: committed text plus the still-moving tail."""
-        full = self.postprocessor.process(self.stabilizer.full_text)
+        full = self.postprocessor.process(self._latest if self.commit_on_endpoint else self.stabilizer.full_text)
         if not full:
             return self._emitted
         return f"{self._prefix}{full}" if self._prefix else full
@@ -109,6 +112,7 @@ class TranscriptionPipeline:
         self._emitted = ""
         self._prefix = ""
         self._confidence = 0.0
+        self._latest = ""
         self._active = True
         if preroll is not None and np.asarray(preroll).size:
             return self.push_audio(np.asarray(preroll, dtype=np.float32))
@@ -137,8 +141,8 @@ class TranscriptionPipeline:
         try:
             result = self.decoder.finalize()
         except Exception:
-            logger.exception("final decode failed")
-            result = None
+            self.abort()
+            raise
         finally:
             self._decode_seconds += time.perf_counter() - started
         if result is not None:
@@ -146,8 +150,10 @@ class TranscriptionPipeline:
             self._confidence = result.confidence or self._confidence
             if result.reset:
                 deltas.extend(self._commit_everything())
-            if result.text:
-                self.stabilizer.update(result.text)
+            self._latest = result.text
+            if self.commit_on_endpoint:
+                self.stabilizer.reset()
+            self.stabilizer.update(result.text)
         deltas.extend(self._commit_everything())
         return [delta for delta in deltas if delta]
 
@@ -168,14 +174,18 @@ class TranscriptionPipeline:
             deltas.extend(self._commit_everything())
             self._prefix = _separated(self._emitted)
             self.stabilizer.reset()
+        self._latest = hypothesis
         if hypothesis:
             self.stabilizer.update(hypothesis)
-            delta = self._emit()
+            delta = "" if self.commit_on_endpoint else self._emit()
             if delta:
                 deltas.append(delta)
         return [delta for delta in deltas if delta]
 
     def _commit_everything(self) -> List[str]:
+        if self.commit_on_endpoint:
+            self.stabilizer.reset()
+            self.stabilizer.update(self._latest)
         self.stabilizer.finalize()
         delta = self._emit()
         return [delta] if delta else []
@@ -183,7 +193,10 @@ class TranscriptionPipeline:
     def _emit(self) -> str:
         """Post-process the committed text and return what has not been sent."""
         processed = f"{self._prefix}{self.postprocessor.process(self.stabilizer.committed_text)}"
-        delta = text_delta(self._emitted, processed)
+        if self._emitted and not processed.startswith(self._emitted):
+            logger.warning("Suppressing a rewrite of already emitted text")
+            return ""
+        delta = processed[len(self._emitted):]
         self._emitted = processed
         return delta
 

@@ -30,6 +30,7 @@ def wait_for(predicate, timeout: float = 3.0) -> bool:
 @pytest.fixture()
 def harness():
     config = AppConfig()
+    config.audio.queue_max_chunks = 128  # tests enqueue faster than microphone time
     config.save_transcripts = False
     config.asr.partial_interval_s = 0.4
     config.asr.left_context_s = 1.0
@@ -124,15 +125,16 @@ def test_statistics_report_the_decoder_and_counts(harness):
         engine.stop()
 
     stats = engine.get_statistics()
-    assert stats["decoder"] == "windowed"
+    assert stats["decoder"] == "endpoint"
     assert stats["utterances"] == 1
     assert stats["decodes"] >= 1
-    assert stats["average_confidence"] > 0.0
+    assert stats["average_confidence"] == 0.0
     assert stats["total_audio_duration"] > 0.0
 
 
 def test_a_backend_crash_does_not_kill_the_worker():
     config = AppConfig()
+    config.audio.queue_max_chunks = 128  # tests enqueue faster than microphone time
     config.save_transcripts = False
     config.asr.partial_interval_s = 0.4
     capture = FakeAudioCapture()
@@ -150,7 +152,10 @@ def test_a_backend_crash_does_not_kill_the_worker():
 
     engine.start()
     try:
-        capture.emit_utterance(blocks(3.0))
+        capture.emit_utterance(blocks(1.0))
+        assert wait_for(lambda: engine.stats.get("errors", 0) == 1)
+        assert utterances == []
+        capture.emit_utterance(blocks(1.0))
         assert wait_for(lambda: len(utterances) == 1), "the worker died after the first failure"
     finally:
         engine.stop()

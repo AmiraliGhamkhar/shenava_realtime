@@ -121,7 +121,7 @@ def test_long_monologue_is_cut_without_losing_state(vad: EnergyVAD):
     vad.config.max_speech_s = 1.0
     events = run(vad, block(1.5, LOUD))
     types = [event.type for event in events]
-    assert types.count(EventType.SPEECH_START) == 1
+    assert types.count(EventType.SPEECH_START) == 2
     assert types.count(EventType.SPEECH_END) >= 1
     assert vad.state is VADState.SPEECH  # still speaking after the forced cut
 

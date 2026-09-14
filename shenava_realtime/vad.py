@@ -17,6 +17,7 @@ returns events, which makes the transitions directly unit-testable.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional
@@ -46,6 +47,16 @@ class VADConfig:
     max_speech_s: float = 20.0
 
     def __post_init__(self) -> None:
+        values = (self.onset_rms, self.offset_rms, self.max_speech_s,
+                  self.min_speech_ms, self.min_silence_ms, self.pre_speech_ms)
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError("VAD settings must be finite")
+        if min(self.min_speech_ms, self.min_silence_ms) <= 0 or self.pre_speech_ms < 0:
+            raise ValueError("Invalid VAD durations")
+        if self.pre_speech_ms > 2000 or self.max_speech_s > 120 or max(self.min_speech_ms, self.min_silence_ms) > 10000:
+            raise ValueError("VAD durations exceed bounded realtime limits")
+        if self.max_speech_s <= self.min_speech_ms / 1000:
+            raise ValueError("Maximum segment must exceed onset duration")
         if self.onset_rms <= 0 or self.offset_rms <= 0:
             raise ValueError("VAD thresholds must be positive")
         if self.offset_rms > self.onset_rms:
@@ -127,7 +138,12 @@ class EnergyVAD:
         frame = np.asarray(frame, dtype=np.float32).reshape(-1)
         if frame.size == 0:
             return []
+        if frame.size > self.config.sample_rate:
+            raise ValueError("Feed VAD blocks of at most one second")
 
+        if not np.isfinite(frame).all():
+            raise ValueError("Non-finite audio frame")
+        frame = frame.copy()
         level = rms(frame)
         self.last_rms = level
         is_speech = level >= (
@@ -143,6 +159,8 @@ class EnergyVAD:
                 self._segment = [frame]
                 self._segment_samples = size
                 self._silence_samples = 0
+                if self._speech_samples >= self.config.min_speech_samples:
+                    events.append(self._start_speech())
             else:
                 self._push_preroll(frame)
             return events
@@ -157,7 +175,8 @@ class EnergyVAD:
                 self._silence_samples += size
             if self._speech_samples >= self.config.min_speech_samples:
                 events.append(self._start_speech())
-            elif self._silence_samples >= self.config.min_silence_samples:
+            elif (self._silence_samples >= self.config.min_silence_samples
+                  or self._segment_samples >= self.config.max_speech_samples):
                 # Short burst that never became speech: drop it.
                 self._drop_segment()
             return events
@@ -171,11 +190,12 @@ class EnergyVAD:
         elif self._segment_samples >= self.config.max_speech_samples:
             # Long monologue: cut a segment without losing the following audio.
             events.append(self._end_speech(keep_speaking=True))
+            events.append(VADEvent(EventType.SPEECH_START, audio=np.empty(0, np.float32)))
         return events
 
     def flush(self) -> List[VADEvent]:
         """Close an open segment (called when capture stops mid-utterance)."""
-        if self.state is VADState.SILENCE or not self._segment:
+        if self.state is not VADState.SPEECH or not self._segment:
             self.reset()
             return []
         return [self._end_speech()]
@@ -184,9 +204,13 @@ class EnergyVAD:
     def _push_preroll(self, frame: np.ndarray) -> None:
         self._preroll.append(frame)
         self._preroll_samples += frame.size
-        limit = self.config.pre_speech_samples
+        limit = max(0, int(self.config.pre_speech_ms * self.config.sample_rate / 1000))
         while self._preroll_samples > limit and len(self._preroll) > 1:
             self._preroll_samples -= self._preroll.pop(0).size
+        if self._preroll_samples > limit:
+            excess = self._preroll_samples - limit
+            self._preroll[0] = self._preroll[0][excess:].copy()
+            self._preroll_samples = limit
 
     def _start_speech(self) -> VADEvent:
         audio = np.concatenate([*self._preroll, *self._segment]) if self._preroll else np.concatenate(self._segment)
