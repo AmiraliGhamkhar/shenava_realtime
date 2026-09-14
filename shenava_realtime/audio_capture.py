@@ -83,6 +83,8 @@ class AudioCapture:
         # Thread management
         self.capture_thread: Optional[threading.Thread] = None
         self.processing_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
         
         # Audio stream
         self.stream = None
@@ -102,20 +104,31 @@ class AudioCapture:
         print("🎤 Starting audio capture...")
         
         self.is_running = True
-        
-        # Start processing thread
-        self.processing_thread = threading.Thread(target=self._processing_loop)
+        self.is_paused = False
+        self._stop_event.clear()
+        self.processing_thread = threading.Thread(target=self._processing_loop, name="audio-processing", daemon=True)
         self.processing_thread.start()
         
         # Start audio stream
-        self.stream = sd.InputStream(
-            channels=self.config.channels,
-            samplerate=self.config.sample_rate,
-            blocksize=self.config.chunk_size,
-            callback=self._audio_callback
-        )
-        self.stream.start()
-        
+        try:
+            self.stream = sd.InputStream(
+                channels=self.config.channels,
+                samplerate=self.config.sample_rate,
+                blocksize=self.config.chunk_size,
+                callback=self._audio_callback,
+            )
+            self.stream.start()
+        except Exception:
+            self.is_running = False
+            self._stop_event.set()
+            if self.stream:
+                self.stream.close()
+                self.stream = None
+            if self.processing_thread:
+                self.processing_thread.join(timeout=2.0)
+                self.processing_thread = None
+            raise
+
         print("✅ Audio capture started")
     
     def stop(self):
@@ -126,19 +139,23 @@ class AudioCapture:
         print("⏹️  Stopping audio capture...")
         
         self.is_running = False
+        self._stop_event.set()
         
-        # Stop stream
         if self.stream:
             self.stream.stop()
             self.stream.close()
+            self.stream = None
         
-        # Stop processing thread
         if self.processing_thread:
             self.processing_thread.join(timeout=2.0)
+            self.processing_thread = None
         
-        # Process any remaining buffer
+        # Flush the final segment exactly once, including when stop is called
+        # while the microphone is mid-sentence.
         if self.speech_buffer:
             self._process_speech_end()
+        with self.audio_queue.mutex:
+            self.audio_queue.queue.clear()
         
         print("✅ Audio capture stopped")
     
@@ -176,9 +193,8 @@ class AudioCapture:
     
     def _processing_loop(self):
         """Main processing loop for audio chunks"""
-        while self.is_running:
+        while not self._stop_event.is_set() or not self.audio_queue.empty():
             try:
-                # Get audio chunk
                 audio_data = self.audio_queue.get(timeout=0.1)
                 
                 # Process chunk

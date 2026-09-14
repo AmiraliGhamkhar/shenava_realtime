@@ -329,7 +329,8 @@ class ShenavaApp:
         """Toggle overlay visibility"""
         if self.overlay:
             self.overlay.toggle()
-            status = "shown" if self.config.overlay.enabled else "hidden"
+            visible = getattr(self.overlay, "is_visible", None)
+            status = "shown" if visible is not False else "hidden"
             print(f"\n🖥️  Overlay {status}")
     
     def toggle_injector(self):

@@ -5,17 +5,15 @@ Real-time Persian speech recognition with a floating overlay window, global hotk
 ## Requirements
 
 - Windows (text injection and hotkeys are Windows-oriented)
-- Python 3.13 with the bundled `venv/` (already configured with all dependencies, including `nemo_toolkit[asr]`)
+- Python 3.10+ with the dependencies in `requirements.txt` and NeMo ASR installed (the model stack is intentionally not imported until the app starts)
 - A working microphone
 
 ## Model
 
-The ASR engine loads the model **from a local `.nemo` file** — no internet download is needed at runtime.
+The ASR engine can load a local `.nemo` file, or download the model from Hugging Face on first start.
 
-- Default path: `C:\Users\ali\Desktop\localASR-shenava\shenava-koochik\shenava-koochik-v1.0.nemo`
-- Configured in `shenava_realtime/config.py` → `ASRConfig.model_path`
-
-If the local file is missing, the engine falls back to downloading the model from HuggingFace (`Reza2kn/Shenava-Koochik-v1.0`). Both `shenava-koochik-1.0.nemo` and `shenava-koochik-v1.0.nemo` in the local folder are identical (459 MB).
+- To use a local file, set `SHENAVA_MODEL_PATH` or `ASRConfig.model_path`.
+- If no local file is configured, the engine downloads `Reza2kn/Shenava-Koochik-v1.0` on first start.
 
 Note: the bundled torch build is CPU-only. The code auto-detects CUDA and will use it when a CUDA-enabled torch is installed; otherwise inference runs on CPU.
 
@@ -23,10 +21,10 @@ Note: the bundled torch build is CPU-only. The code auto-detects CUDA and will u
 
 ```bash
 # Option 1: background launcher (recommended; writes app.log)
-venv/Scripts/python.exe run_app.py
+python run_app.py
 
 # Option 2: foreground in the terminal
-venv/Scripts/python.exe main.py
+python main.py
 ```
 
 Startup takes ~30 seconds (loading the 460 MB model). The overlay window appears near the bottom of the screen; speak and recognized text will show in the overlay and be typed into the focused application (output mode: `both`).
