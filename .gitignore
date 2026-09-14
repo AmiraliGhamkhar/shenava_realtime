@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+venv/
+
+# App runtime artifacts
+app.log
+*.log
+transcripts/
+
+# Model artifacts (large; kept outside the repo)
+*.nemo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.freebuff/
