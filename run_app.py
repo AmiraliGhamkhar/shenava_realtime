@@ -1,17 +1,18 @@
-"""Launch the Shenava app as a detached background process."""
+"""Start the application in the background and write output to ``app.log``."""
+
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent
-PY = ROOT / "venv" / "Scripts" / "python.exe"
+ROOT = Path(__file__).resolve().parent
 LOG = ROOT / "app.log"
+python = Path(sys.executable)
 
-proc = subprocess.Popen(
-    [str(PY), "-u", str(ROOT / "main.py")],
-    cwd=str(ROOT),
-    stdout=open(LOG, "w", encoding="utf-8"),
-    stderr=subprocess.STDOUT,
-    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-)
-print(f"Started PID {proc.pid}, logging to {LOG}")
+with LOG.open("w", encoding="utf-8") as log:
+    kwargs = {"cwd": ROOT, "stdout": log, "stderr": subprocess.STDOUT}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    process = subprocess.Popen([str(python), "-u", str(ROOT / "main.py")], **kwargs)
+
+print(f"Started PID {process.pid}, logging to {LOG}")

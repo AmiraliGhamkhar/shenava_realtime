@@ -1,16 +1,17 @@
 # Core
 numpy>=1.24,<3
 
-# PyTorch
+# PyTorch and NeMo ASR
 torch>=2.0
 torchaudio>=2.0
+nemo_toolkit[asr]>=2.0
 
 # Audio capture
 sounddevice>=0.4.6
 soundfile>=0.12.0
 
-# GUI / overlay
-PyQt5>=5.15.0
+# GUI / overlay (tkinter is included with standard Windows Python)
+# No extra GUI package is required
 
 # Text injection
 pyautogui>=0.9.54

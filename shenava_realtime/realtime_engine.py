@@ -175,13 +175,16 @@ class RealtimeASR:
         print("="*60)
         
         self.is_running = True
-        
-        # Start processing thread
-        self.processing_thread = threading.Thread(target=self._processing_loop)
+        self.processing_thread = threading.Thread(target=self._processing_loop, name="asr-processing", daemon=True)
         self.processing_thread.start()
         
-        # Start audio capture
-        self.audio_capture.start()
+        try:
+            self.audio_capture.start()
+        except Exception:
+            self.is_running = False
+            self.processing_thread.join(timeout=2.0)
+            self.processing_thread = None
+            raise
         
         print("\n🎤 Listening... (Press Ctrl+Alt+R to toggle)")
         print("   Ctrl+Alt+O: Toggle overlay")
@@ -197,14 +200,15 @@ class RealtimeASR:
         
         self.is_running = False
         
-        # Stop audio capture
         self.audio_capture.stop()
         
-        # Stop processing thread
         if self.processing_thread:
             self.processing_thread.join(timeout=2.0)
+            self.processing_thread = None
         
-        # Process any remaining data
+        self.state.is_processing = False
+        self.state.partial_text = ""
+        # Process any remaining final results
         self._process_remaining()
         
         # Save transcript
@@ -338,9 +342,12 @@ class RealtimeASR:
             
             text, confidence = self._infer(audio_data)
             
+            self.state.is_processing = False
             if text:
                 # Post-process text
                 processed_text = self.postprocessor.process(text)
+                if not processed_text:
+                    return
                 
                 # Update state
                 self.state.current_text = processed_text
@@ -388,7 +395,11 @@ class RealtimeASR:
         confidence = 0.0
         
         try:
-            if isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+            # NeMo normally returns a list, but some versions return a single
+            # hypothesis/string. Accept both forms.
+            if not isinstance(outputs, (list, tuple)):
+                outputs = [outputs]
+            if len(outputs) > 0:
                 output = outputs[0]
                 
                 # NeMo Hypothesis objects (return_hypotheses=True)
@@ -396,7 +407,10 @@ class RealtimeASR:
                     text = output.text or ''
                     score = getattr(output, 'score', None)
                     if score is not None:
-                        confidence = float(score)
+                        # NeMo scores are often log probabilities, not a 0..1
+                        # confidence. Keep public callbacks predictable.
+                        value = float(score)
+                        confidence = value if 0.0 <= value <= 1.0 else float(np.exp(value))
                 elif isinstance(output, dict):
                     text = output.get('text', '')
                     if 'logprobs' in output:
