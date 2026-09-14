@@ -30,7 +30,6 @@ MEDICAL_TERMS: Dict[str, str] = {
     "نوار قلب": "ECG",
     "اکو کاردیوگرافی": "اکوکاردیوگرافی",
     "انفارکتوس میوکارد": "MI",
-    "انفارکتوس": "MI",
     "نارسایی احتقانی قلب": "CHF",
     "بیماری عروق کرونر": "CAD",
     "فشار خون": "BP",
@@ -113,6 +112,14 @@ UNITS: Dict[str, str] = {
     "میلی گرم در روز": "mg/day",
     "میلی لیتر در ساعت": "mL/h",
     "میلی لیتر در دقیقه": "mL/min",
+    "میلی گرم در دسی لیتر": "mg/dL",
+    "میلی مول در لیتر": "mmol/L",
+    "میلی متر جیوه": "mmHg",
+    "میکروگرم در میلی لیتر": "mcg/mL",
+    "μg": "mcg",
+    "milligram": "mg",
+    "milligrams": "mg",
+    "میکرو گرم در دقیقه": "mcg/min",
     # Percent (kept last: the trie takes the longest match anyway)
     "درصد": "%",
     "در صد": "%",
@@ -129,6 +136,7 @@ def build_rewriter(
     fst = TrieFST()
     if medical_terms:
         fst.add_many(MEDICAL_TERMS)
+        fst.add_many({value: value for value in MEDICAL_TERMS.values() if value.isascii()})
     if units:
         fst.add_many(UNITS)
     if extra_terms:

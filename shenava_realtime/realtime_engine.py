@@ -48,6 +48,10 @@ class RealtimeASR:
         pipeline: Optional[TranscriptionPipeline] = None,
     ) -> None:
         self.config = config or AppConfig()
+        self.config.audio.__post_init__()
+        self.config.asr.__post_init__()
+        if self.config.asr.max_segment_s < (self.config.audio.vad_max_speech_s + self.config.audio.vad_pre_speech_ms / 1000 + 2 * self.config.audio.chunk_duration):
+            raise ValueError("ASR segment limit must cover VAD maximum plus pre-roll and two blocks")
         self.asr_config = self.config.asr
 
         if backend is None:
@@ -63,6 +67,7 @@ class RealtimeASR:
         self.audio_capture.on_speech_start = self._on_speech_start
         self.audio_capture.on_speech_end = self._on_speech_end
         self.audio_capture.on_audio = self._on_audio
+        self.audio_capture.on_discontinuity = lambda: self._enqueue((_CLEAR,))
 
         postprocessor = PostProcessor(self.config.postprocess)
         decoder = make_decoder(self.backend, self.asr_config, self.config.audio.sample_rate)
@@ -70,6 +75,7 @@ class RealtimeASR:
             decoder=decoder,
             postprocessor=postprocessor,
             holdback_words=self.asr_config.holdback_words,
+            commit_on_endpoint=self.asr_config.commit_on_endpoint,
         )
         self.postprocessor = self.pipeline.postprocessor
 
@@ -78,7 +84,8 @@ class RealtimeASR:
         self.on_text_delta: Optional[Callable[[str, float], None]] = None
         self.on_utterance_end: Optional[Callable[[str, float], None]] = None
 
-        self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=512)
+        self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=max(2, self.config.audio.queue_max_chunks))
+        self._enqueue_lock = threading.Lock()
         self._worker: Optional[threading.Thread] = None
         self._lock = threading.RLock()
         self._transcript = TextBuffer()
@@ -92,7 +99,6 @@ class RealtimeASR:
             "audio_seconds": 0.0,
             "average_confidence": 0.0,
         }
-        self._confidence_sum = 0.0
 
     # ------------------------------------------------------------------ #
     @property
@@ -127,7 +133,6 @@ class RealtimeASR:
             worker = self._worker
             if worker is None and not self.audio_capture.is_running:
                 return
-            self._worker = None
         try:
             self.audio_capture.stop()
         except Exception:
@@ -136,7 +141,9 @@ class RealtimeASR:
             self._enqueue(None)
             worker.join(timeout=5.0)
             if worker.is_alive():
-                logger.warning("ASR worker did not exit within 5s")
+                logger.error("ASR worker still stopping; restart is blocked until it exits")
+            else:
+                self._worker = None
         if self.config.save_transcripts:
             self.save_transcript()
         logger.info(
@@ -168,15 +175,25 @@ class RealtimeASR:
         self._enqueue((_END, duration))
 
     def _enqueue(self, item: Optional[tuple]) -> None:
-        try:
-            self._queue.put_nowait(item)
-        except queue.Full:
-            logger.warning("ASR queue is full; dropping the oldest work item")
+        with self._enqueue_lock:
             try:
-                self._queue.get_nowait()
                 self._queue.put_nowait(item)
-            except queue.Empty:  # pragma: no cover - defensive
-                pass
+            except queue.Full:
+                logger.error("ASR overrun: aborting incomplete utterance (audio discontinuity)")
+                self.stats["overruns"] = self.stats.get("overruns", 0) + 1
+                while True:
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                # Never continue cached inference across missing audio. The
+                # next START reopens the pipeline; orphan audio is ignored.
+                if item is None:
+                    self._queue.put_nowait((_CLEAR,))
+                    # maxsize may be one; worker will consume the reset first.
+                    self._queue.put_nowait(None)
+                else:
+                    self._queue.put_nowait((_CLEAR,))
 
     # ------------------------------------------------------------------ #
     def _work_loop(self) -> None:
@@ -191,34 +208,35 @@ class RealtimeASR:
             try:
                 self._handle(item)
             except Exception:
-                logger.exception("error while handling %s", item[0] if item else item)
+                logger.exception("error while handling %s; aborting utterance", item[0] if item else item)
+                self.stats["errors"] = self.stats.get("errors", 0) + 1
+                self.pipeline.abort()
+                self._partial_text = ""
         logger.debug("ASR worker stopped")
 
     def _handle(self, item: tuple) -> None:
         kind = item[0]
         if kind == _START:
-            self.pipeline.start_utterance(item[1])
+            self._consume_deltas(self.pipeline.start_utterance(item[1]))
             self._partial_text = ""
         elif kind == _AUDIO:
             self._consume_deltas(self.pipeline.push_audio(item[1]))
         elif kind == _END:
+            if not self.pipeline.is_active:
+                return
             duration = float(item[1])
             self.stats["audio_seconds"] += duration
             self.stats["utterances"] += 1
             deltas = self.pipeline.end_utterance()
             self._consume_deltas(deltas)
             self.stats["decode_seconds"] = self.pipeline.decode_seconds
-            confidence = self.pipeline.confidence
-            if confidence > 0.0:
-                self._confidence_sum += confidence
-                self.stats["average_confidence"] = self._confidence_sum / max(1.0, self.stats["utterances"])
             text = self.pipeline.committed_text
             self._partial_text = ""
             if text:
                 self._needs_separator = True
                 self._transcript.add_text(text)
                 self._notify(self.on_utterance_end, text, self.pipeline.confidence)
-                logger.info("[%.1fs] %s", duration, text)
+                logger.info("utterance completed: %.1fs, %d characters", duration, len(text))
         elif kind == _CLEAR:
             self.pipeline.abort()
             self._partial_text = ""
@@ -251,10 +269,12 @@ class RealtimeASR:
 
     # ------------------------------------------------------------------ #
     def _stop_worker(self) -> None:
-        worker, self._worker = self._worker, None
+        worker = self._worker
         if worker is not None:
             self._enqueue(None)
             worker.join(timeout=5.0)
+            if not worker.is_alive():
+                self._worker = None
 
     def save_transcript(self) -> Optional[Path]:
         """Persist the session transcript; returns the path when written."""

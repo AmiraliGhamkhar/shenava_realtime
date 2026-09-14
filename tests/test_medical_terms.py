@@ -54,7 +54,7 @@ def test_unknown_words_are_untouched(processor: PostProcessor):
 def test_tables_have_no_conflicting_rules():
     # A conflict would raise while building the automaton.
     fst = build_rewriter()
-    assert len(fst) == len(MEDICAL_TERMS) + len(UNITS)
+    assert len(fst) == len(MEDICAL_TERMS) + len(UNITS) + len({v for v in MEDICAL_TERMS.values() if v.isascii()})
     assert fst.max_phrase_len >= 3
 
 

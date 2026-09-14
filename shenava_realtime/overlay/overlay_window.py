@@ -143,9 +143,8 @@ class OverlayWindow:
             text = "…" + text[-limit:]
         self._text_var.set(text)
         self.last_text_time = time.time()
-        self.status.config(fg=_STATUS_COLOR_ACTIVE if confidence > 0 else _STATUS_COLOR_IDLE)
-        if self.config.show_confidence and confidence > 0:
-            self.root.title(f"Shenava ASR — {confidence:.0%}")
+        self.status.config(fg=_STATUS_COLOR_ACTIVE if text else _STATUS_COLOR_IDLE)
+        # Legacy confidence argument is unknown, not a calibrated probability.
         self._schedule_auto_hide()
         if not self.is_visible:
             self.show()
@@ -217,7 +216,7 @@ class OverlayManager:
 
     def __init__(self, config: Optional[OverlayConfig] = None) -> None:
         self.config = config or OverlayConfig()
-        self.ui_queue: "queue.Queue[Tuple[str, tuple]]" = queue.Queue()
+        self.ui_queue: "queue.Queue[Tuple[str, tuple]]" = queue.Queue(maxsize=64)
         self._thread: Optional[threading.Thread] = None
         self._window: Optional[OverlayWindow] = None
         self._ready = threading.Event()
@@ -264,21 +263,32 @@ class OverlayManager:
     def stop(self) -> None:
         thread = self._thread
         window = self._window
-        self._thread = None
-        self._window = None
         if window is not None:
             # Destroy on the Tk thread: quit() wakes the mainloop, which returns
             # and lets _run() finish on its own thread.
-            self.ui_queue.put(("shutdown", ()))
+            self._post("shutdown")
         if thread is not None:
             thread.join(timeout=3.0)
             if thread.is_alive():
-                logger.warning("overlay thread did not exit within 3s")
+                logger.warning("overlay thread did not exit within 3s; restart blocked")
+            else:
+                self._thread = None
+                self._window = None
             logger.info("overlay window stopped")
 
     # ------------------------------------------------------------------ #
     def _post(self, method: str, *args: Any) -> None:
-        self.ui_queue.put((method, args))
+        try:
+            self.ui_queue.put_nowait((method, args))
+        except queue.Full:
+            try:
+                self.ui_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.ui_queue.put_nowait((method, args))
+            except queue.Full:
+                pass
 
     def update_text(self, text: str, confidence: float = 0.0) -> None:
         self._post("update_text", text, confidence)

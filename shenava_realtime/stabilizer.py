@@ -29,7 +29,7 @@ class StabilizerConfig:
 
 
 def _words(text: str) -> List[str]:
-    return [word for word in (text or "").split(" ") if word]
+    return (text or "").split()
 
 
 def common_prefix_length(left: Sequence[str], right: Sequence[str]) -> int:
@@ -74,7 +74,12 @@ class TranscriptStabilizer:
         """
         words = _words(hypothesis)
         if self.config.max_partial_words and len(words) > self.config.max_partial_words:
-            words = words[-self.config.max_partial_words :]
+            raise ValueError("Hypothesis exceeds stabilization word limit")
+
+        if words[:len(self._committed)] != self._committed:
+            self._partial = []
+            logger.warning("Hypothesis rewrote committed prefix; refusing unsafe tail")
+            return ""
 
         previous = [*self._committed, *self._partial]
         stable = common_prefix_length(previous, words)
@@ -109,6 +114,9 @@ class TranscriptStabilizer:
                 shared,
                 len(self._committed),
             )
+        if shared < len(self._committed):
+            self._partial = []
+            return ""
         newly = words[len(self._committed) :]
         self._committed.extend(newly)
         self._partial = []

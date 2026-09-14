@@ -15,6 +15,8 @@ without touching this logic.
 
 from __future__ import annotations
 
+import re
+
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .text_normalize import match_key
@@ -84,6 +86,8 @@ class TrieFST:
             best_end = index
             cursor = index
             while cursor < count:
+                if cursor > index and re.search(r"[.,!?;:،؛؟()]$", tokens[cursor - 1]):
+                    break
                 node = node.children.get(match_key(tokens[cursor]))
                 if node is None:
                     break
@@ -96,7 +100,9 @@ class TrieFST:
                 continue
             if index > unmatched_start:
                 spans.append((None, unmatched_start, index))
-            spans.append((best_output, index, best_end))
+            leading = re.match(r"^[\(\"\']*", tokens[index]).group()
+            trailing = re.search(r"[.,!?;:،؛؟)\"\']*$", tokens[best_end - 1]).group()
+            spans.append((leading + best_output + trailing, index, best_end))
             index = best_end
             unmatched_start = index
         if unmatched_start < count:

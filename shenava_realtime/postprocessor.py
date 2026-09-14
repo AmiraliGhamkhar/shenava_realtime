@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from . import fa_numbers
 from .config import PostProcessConfig
 from .fst import TrieFST
-from .lexicon import build_rewriter
+from .lexicon import UNITS, build_rewriter
 from .text_normalize import ZWNJ, fix_punctuation, join_affixes, match_key, normalize
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class PostProcessor:
         # Latin tokens the FST emits; used to tell "یک" (1) from "یک" (a/an).
         self._unit_tokens: Set[str] = {
             match_key(token)
-            for _, output in self.fst.rules
+            for output in UNITS.values()
             for token in output.split()
             if token
         }

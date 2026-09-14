@@ -47,7 +47,7 @@ def test_defaults_are_16k_mono_ctc():
 def test_env_overrides(monkeypatch):
     monkeypatch.setenv("SHENAVA_MODEL_PATH", "/tmp/model.nemo")
     monkeypatch.setenv("SHENAVA_DEVICE", "cpu")
-    monkeypatch.setenv("SHENAVA_DECODER", "rnnt")
+    monkeypatch.setenv("SHENAVA_DECODER", "ctc")
     monkeypatch.setenv("SHENAVA_NUM_THREADS", "8")
     monkeypatch.setenv("SHENAVA_OUTPUT_MODE", "inject")
     monkeypatch.setenv("SHENAVA_INJECTOR_MODE", "keyboard")
@@ -56,7 +56,7 @@ def test_env_overrides(monkeypatch):
     config = apply_env_overrides(AppConfig())
     assert config.asr.model_path == "/tmp/model.nemo"
     assert config.asr.device == "cpu"
-    assert config.asr.decoder_type == "rnnt"
+    assert config.asr.decoder_type == "ctc"
     assert config.asr.num_threads == 8
     assert config.output_mode is OutputMode.INJECT_ONLY
     assert config.injector.mode is InjectorMode.KEYBOARD

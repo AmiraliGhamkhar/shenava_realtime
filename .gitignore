@@ -19,3 +19,11 @@ transcripts/
 Thumbs.db
 .idea/
 .vscode/
+
+# Sensitive clinical output and rotating logs
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.jsonl
+app.log.*

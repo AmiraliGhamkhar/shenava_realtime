@@ -1,4 +1,4 @@
-"""Start the application detached and tee its output to ``app.log``.
+"""Start the application detached and tee its output to ``launcher.log``.
 
 Useful on Windows, where a console window per run is annoying::
 
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-LOG = ROOT / "app.log"
+LOG = ROOT / "launcher.log"
 
 
 def main() -> int:

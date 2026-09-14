@@ -3,7 +3,7 @@
 Replaces the old one-off ``profile_*.py`` scripts: it reads the model path from
 the usual configuration (``SHENAVA_MODEL_PATH`` / ``--model``) instead of a
 hard-coded absolute path, and it measures both the offline decode latency and
-the streaming window cost.
+the native-streaming cost.
 
     python tools/profile_asr.py --seconds 1 2 5 10 --threads 4
 """
@@ -42,7 +42,7 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--seconds", type=float, nargs="+", default=[1.0, 2.0, 5.0, 10.0])
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--streaming", action="store_true", help="also measure windowed streaming")
+    parser.add_argument("--streaming", action="store_true", help="also measure native streaming / endpoint fallback")
     args = parser.parse_args()
 
     setup_logging("WARNING")
@@ -85,6 +85,8 @@ def main() -> int:
         for index in range(0, len(audio), block):
             if decoder.push(audio[index : index + block]) is not None:
                 decodes += 1
+        if decoder.finalize() is not None:
+            decodes += 1
         elapsed = time.perf_counter() - started
         print(
             f"\nstreaming ({decoder.name}): {decodes} decodes in {elapsed:.2f}s "

@@ -1,8 +1,10 @@
 """Streaming decoders: bounded work per step, no full-buffer re-decoding."""
 
 import numpy as np
+import pytest
+from shenava_realtime.config import ASRConfig
 
-from shenava_realtime.streaming import CacheAwareDecoder, WindowedDecoder, make_decoder
+from shenava_realtime.streaming import CacheAwareDecoder, EndpointDecoder, make_decoder
 from tests.fakes import FakeBackend, RecordingTranscriber
 
 SR = 16000
@@ -12,66 +14,27 @@ def audio(seconds: float) -> np.ndarray:
     return np.zeros(int(seconds * SR), dtype=np.float32)
 
 
-def test_windowed_decoder_waits_for_enough_new_audio():
+def test_endpoint_decodes_exactly_once_and_is_bounded():
     transcriber = RecordingTranscriber()
-    decoder = WindowedDecoder(transcriber, sample_rate=SR, min_new_audio_s=0.5)
-    assert decoder.push(audio(0.2)) is None
+    decoder = EndpointDecoder(transcriber, max_segment_s=2)
+    for _ in range(4):
+        assert decoder.push(audio(.5)) is None
     assert transcriber.calls == []
-    assert decoder.push(audio(0.4)) is not None
-    assert len(transcriber.calls) == 1
+    with pytest.raises(ValueError):
+        decoder.push(audio(.1))
+    assert decoder.finalize() is not None
+    assert transcriber.calls == [2.0]
+    assert decoder.finalize() is None
+    assert decoder.samples == 0
 
 
-def test_windowed_decoder_never_decodes_the_whole_growing_buffer():
+def test_endpoint_reset_discards_pending_audio():
     transcriber = RecordingTranscriber()
-    decoder = WindowedDecoder(
-        transcriber,
-        sample_rate=SR,
-        left_context_s=1.0,
-        max_window_s=3.0,
-        min_new_audio_s=0.5,
-    )
-    for _ in range(40):  # 20 seconds of audio in half-second blocks
-        decoder.push(audio(0.5))
-
-    assert len(transcriber.calls) == 40
-    # The naive implementation would decode 0.5s, 1.0s, ... 20s. The window is
-    # bounded by max_window_s (+ one block of slack).
-    assert max(transcriber.calls) <= 3.0 + 0.5 + 1e-6
-    assert max(transcriber.calls) < 20.0
-
-
-def test_windowed_decoder_signals_a_reset_after_trimming():
-    transcriber = RecordingTranscriber()
-    decoder = WindowedDecoder(
-        transcriber,
-        sample_rate=SR,
-        left_context_s=1.0,
-        max_window_s=2.0,
-        min_new_audio_s=0.5,
-    )
-    results = [decoder.push(audio(0.5)) for _ in range(12)]
-    results = [result for result in results if result is not None]
-    assert any(result.reset for result in results), "long utterances must be cut into windows"
-    assert results[0].reset is False
-
-
-def test_windowed_finalize_flushes_pending_audio():
-    transcriber = RecordingTranscriber()
-    decoder = WindowedDecoder(transcriber, sample_rate=SR, min_new_audio_s=1.0)
-    decoder.push(audio(0.3))
-    assert transcriber.calls == []
-    result = decoder.finalize()
-    assert result is not None
-    assert transcriber.calls == [0.3]
-
-
-def test_windowed_reset_clears_the_buffer():
-    transcriber = RecordingTranscriber()
-    decoder = WindowedDecoder(transcriber, sample_rate=SR, min_new_audio_s=0.5)
-    decoder.push(audio(1.0))
+    decoder = EndpointDecoder(transcriber)
+    decoder.push(audio(1))
     decoder.reset()
-    decoder.push(audio(0.5))
-    assert transcriber.calls[-1] == 0.5
+    assert decoder.finalize() is None
+    assert not transcriber.calls
 
 
 class FakeStream:
@@ -120,10 +83,10 @@ def test_make_decoder_prefers_cache_aware_streams():
     assert isinstance(decoder, CacheAwareDecoder)
 
 
-def test_make_decoder_falls_back_to_windowed():
+def test_make_decoder_falls_back_to_endpoint():
     decoder = make_decoder(FakeBackend())
-    assert isinstance(decoder, WindowedDecoder)
-    assert decoder.name == "windowed"
+    assert isinstance(decoder, EndpointDecoder)
+    assert decoder.name == "endpoint"
 
 
 def test_make_decoder_survives_a_broken_stream_factory():
@@ -131,4 +94,23 @@ def test_make_decoder_survives_a_broken_stream_factory():
         def create_stream(self):
             raise RuntimeError("no streaming support")
 
-    assert isinstance(make_decoder(BrokenBackend()), WindowedDecoder)
+    with pytest.raises(RuntimeError):
+        make_decoder(BrokenBackend())
+
+
+def test_streaming_disable_and_strict_mode():
+    with pytest.raises(RuntimeError, match="does not support"):
+        make_decoder(FakeBackend(), ASRConfig(require_streaming=True))
+    class Backend(FakeBackend):
+        def create_stream(self):
+            pytest.fail("disabled stream must not be created")
+    assert isinstance(make_decoder(Backend(), ASRConfig(use_cache_aware_streaming=False)), EndpointDecoder)
+
+
+def test_native_finalize_is_called_even_without_pending_audio():
+    class Stream(FakeStream):
+        def finalize(self):
+            return "پایان", 0.0
+    decoder = CacheAwareDecoder(Stream())
+    decoder.push(audio(1))
+    assert decoder.finalize().text == "پایان"

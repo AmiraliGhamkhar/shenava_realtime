@@ -22,7 +22,7 @@ import numpy as np
 
 try:  # pragma: no cover - optional at import time so tests run without it
     import sounddevice as sd
-except ImportError:  # pragma: no cover
+except (ImportError, OSError):  # pragma: no cover
     sd = None
 
 from .config import AudioConfig
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Control marker pushed through the audio queue so that state changes happen on
 # the consumer thread (the only thread allowed to touch the VAD).
 _CLEAR = object()
+_PAUSE = object()
 
 
 class AudioCapture:
@@ -55,6 +56,7 @@ class AudioCapture:
         # Callbacks (set by the engine; invoked on the consumer thread only).
         self.on_speech_start: Optional[Callable[[np.ndarray], None]] = None
         self.on_speech_end: Optional[Callable[[float], None]] = None
+        self.on_discontinuity: Optional[Callable[[], None]] = None
         self.on_audio: Optional[Callable[[np.ndarray, bool], None]] = None
 
         self._queue: "queue.Queue[Optional[np.ndarray]]" = queue.Queue(
@@ -66,6 +68,7 @@ class AudioCapture:
         self._lock = threading.RLock()
         self._dropped_chunks = 0
         self._warned_drop = False
+        self._discontinuity = threading.Event()
 
         self.stats: Dict[str, float] = {
             "chunks": 0,
@@ -106,6 +109,7 @@ class AudioCapture:
                 self.config.chunk_size,
             )
             self.vad.reset()
+            self._discontinuity.clear()
             self._paused = False
             self._thread = threading.Thread(target=self._consume_loop, name="audio-capture", daemon=True)
             self._thread.start()
@@ -134,13 +138,14 @@ class AudioCapture:
             if thread is None and stream is None:
                 return
             logger.info("stopping audio capture")
-            self._thread = None
             self._stream = None
 
         if stream is not None:
             try:
-                stream.stop()
-                stream.close()
+                try:
+                    stream.stop()
+                finally:
+                    stream.close()
             except Exception:
                 logger.exception("error while closing the audio stream")
 
@@ -148,11 +153,17 @@ class AudioCapture:
             self._push_sentinel()
             thread.join(timeout=3.0)
             if thread.is_alive():
-                logger.warning("audio consumer thread did not exit within 3s")
+                logger.warning("audio consumer thread did not exit within 3s; restart blocked")
+            else:
+                self._thread = None
         logger.info("audio capture stopped")
 
     def pause(self) -> None:
         self._paused = True
+        try:
+            self._queue.put(_PAUSE, timeout=1)
+        except queue.Full:
+            self._discontinuity.set()
         logger.info("audio capture paused")
 
     def resume(self) -> None:
@@ -168,18 +179,22 @@ class AudioCapture:
         try:
             self._queue.put_nowait(_CLEAR)
         except queue.Full:
-            logger.debug("audio queue full; the clear request was dropped")
+            self._discontinuity.set()
+            logger.warning("audio queue full; scheduling detector reset")
 
     # ------------------------------------------------------------------ #
     def _audio_callback(self, indata, frames, time_info, status) -> None:  # pragma: no cover - I/O
         if status:
+            if getattr(status, "input_overflow", False):
+                self._discontinuity.set()
             logger.warning("audio stream status: %s", status)
         if self._paused:
             return
         try:
-            block = np.ascontiguousarray(indata[:, 0], dtype=np.float32)
+            block = np.array(indata[:, 0], dtype=np.float32, copy=True)
             self._queue.put_nowait(block)
         except queue.Full:
+            self._discontinuity.set()
             self._dropped_chunks += 1
             if not self._warned_drop:
                 self._warned_drop = True
@@ -187,8 +202,9 @@ class AudioCapture:
 
     def _push_sentinel(self) -> None:
         try:
-            self._queue.put_nowait(None)
+            self._queue.put(None, timeout=1.0)
         except queue.Full:
+            self._discontinuity.set()
             with self._queue.mutex:
                 self._queue.queue.clear()
             try:
@@ -197,17 +213,21 @@ class AudioCapture:
                 logger.error("could not signal the audio consumer to stop")
 
     def _shutdown_thread(self) -> None:
-        thread, self._thread = self._thread, None
+        thread = self._thread
         stream, self._stream = self._stream, None
         if stream is not None:
             try:
-                stream.stop()
-                stream.close()
+                try:
+                    stream.stop()
+                finally:
+                    stream.close()
             except Exception:
                 logger.exception("error while closing the audio stream")
         if thread is not None:
             self._push_sentinel()
             thread.join(timeout=3.0)
+            if not thread.is_alive():
+                self._thread = None
 
     # ------------------------------------------------------------------ #
     def _consume_loop(self) -> None:
@@ -219,8 +239,15 @@ class AudioCapture:
                 self._process_item(block)
         except Exception:
             logger.exception("audio consumer crashed")
+            if self.on_discontinuity:
+                self.on_discontinuity()
+            self.vad.reset()
         finally:
             try:
+                if self._discontinuity.is_set():
+                    self.vad.reset()
+                    if self.on_discontinuity:
+                        self.on_discontinuity()
                 for event in self.vad.flush():
                     self._dispatch(event)
             except Exception:
@@ -228,18 +255,34 @@ class AudioCapture:
             self.stats["dropped_chunks"] = self._dropped_chunks
 
     def _process_item(self, block) -> None:
+        if block is _PAUSE:
+            for event in self.vad.flush():
+                self._dispatch(event)
+            return
         if block is _CLEAR:
+            if self.on_discontinuity:
+                self.on_discontinuity()
             self.vad.reset()
             logger.debug("VAD reset")
             return
         self._consume(block)
 
     def _consume(self, block: np.ndarray) -> None:
+        if self._discontinuity.is_set():
+            self._discontinuity.clear()
+            if self.on_discontinuity:
+                self.on_discontinuity()
+            self.vad.reset()
+            with self._queue.mutex:
+                controls = [item for item in self._queue.queue if not isinstance(item, np.ndarray)]
+                self._queue.queue.clear()
+                self._queue.queue.extend(controls)
+            return
         duration = block.size / float(self.config.sample_rate)
 
         # Hand the block to the streaming consumer *before* the boundary
         # events, so an utterance always has all of its audio when it ends.
-        in_speech = self.vad.state is not VADState.SILENCE
+        in_speech = self.vad.state is VADState.SPEECH
         if self.on_audio is not None:
             try:
                 self.on_audio(block, in_speech)

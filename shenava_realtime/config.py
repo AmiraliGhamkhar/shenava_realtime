@@ -133,7 +133,18 @@ class AudioConfig:
     vad_max_speech_s: float = 20.0
 
     # Bounded capture queue: oldest chunk is dropped when the consumer stalls
-    queue_max_chunks: int = 96
+    queue_max_chunks: int = 32
+
+    def __post_init__(self) -> None:
+        if self.sample_rate != 16000 or self.channels != 1:
+            raise ValueError("Shenava requires 16000 Hz mono audio")
+        if not 1 <= self.chunk_size <= 16000 or not 1 <= self.queue_max_chunks <= 1024:
+            raise ValueError("Invalid audio block/queue size")
+        from .vad import VADConfig
+        VADConfig(sample_rate=self.sample_rate, onset_rms=self.vad_onset_rms,
+                  offset_rms=self.vad_offset_rms, min_speech_ms=self.vad_min_speech_ms,
+                  min_silence_ms=self.vad_min_silence_ms, pre_speech_ms=self.vad_pre_speech_ms,
+                  max_speech_s=self.vad_max_speech_s)
 
     @property
     def chunk_duration(self) -> float:
@@ -142,7 +153,7 @@ class AudioConfig:
 
 @dataclass
 class ASRConfig:
-    """Shenava (NeMo FastConformer hybrid) CTC decoding + streaming window."""
+    """Shenava CTC, native encoder lookahead and bounded endpoint fallback."""
 
     model_name: str = DEFAULT_MODEL_NAME
     model_path: Optional[str] = field(
@@ -151,13 +162,29 @@ class ASRConfig:
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "cuda:1"
     decoder_type: str = "ctc"
     num_threads: int = 4
-    confidence_threshold: float = 0.0
+    confidence_threshold: float = 0.0  # deprecated; uncalibrated scores are not filtered
+    allow_download: bool = False
+    require_streaming: bool = False
+    right_context: int = 13
+    max_segment_s: float = 22.0
+    commit_on_endpoint: bool = True
 
-    # Streaming: how often to re-decode and how much audio each decode sees.
+    # How often to hand new audio to the native stream (encoder chunk sizes
+    # come from checkpoint metadata). Legacy window knobs are ignored.
     partial_interval_s: float = 0.5
     left_context_s: float = 2.0
     max_window_s: float = 10.0
     use_cache_aware_streaming: bool = True
+
+    def __post_init__(self) -> None:
+        if self.decoder_type != "ctc":
+            raise ValueError("Only greedy CTC decoding is supported")
+        if self.right_context not in (0, 1, 6, 13):
+            raise ValueError("right_context must be 0, 1, 6 or 13")
+        if not 0 < self.partial_interval_s <= 5 or not 0 < self.max_segment_s <= 120:
+            raise ValueError("Invalid ASR interval or segment limit")
+        if self.num_threads < 1 or self.holdback_words < 0:
+            raise ValueError("Invalid thread count or holdback")
 
     # Transcript stabilization: words kept un-committed until they stop moving.
     holdback_words: int = 2
@@ -169,7 +196,7 @@ class PostProcessConfig:
 
     enabled: bool = True
     normalize_unicode: bool = True
-    remove_repetitions: bool = True
+    remove_repetitions: bool = False
     convert_numbers: bool = True
     digits: DigitStyle = DigitStyle.ASCII
     medical_terms: bool = True
@@ -207,7 +234,7 @@ class InjectorConfig:
     restore_clipboard: bool = True
     send_space_after: bool = False
     send_enter_after: bool = False
-    skip_consecutive_duplicates: bool = True
+    skip_consecutive_duplicates: bool = False
 
 
 @dataclass
@@ -230,8 +257,10 @@ class AppConfig:
     output_mode: OutputMode = OutputMode.BOTH
     debug: bool = False
     log_level: str = "INFO"
-    save_transcripts: bool = True
+    save_transcripts: bool = False
     transcripts_dir: str = "transcripts"
+    clinical_sqlite: Optional[str] = None
+    clinical_jsonl: Optional[str] = None
 
     @classmethod
     def from_env(cls, config_path: Optional[Path] = None) -> "AppConfig":
@@ -260,7 +289,14 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
     config.asr.partial_interval_s = _env_float(
         "SHENAVA_PARTIAL_INTERVAL_S", config.asr.partial_interval_s
     )
-    config.audio.device = _env("SHENAVA_AUDIO_DEVICE") or config.audio.device
+    config.asr.allow_download = _env_bool("SHENAVA_ALLOW_DOWNLOAD", config.asr.allow_download)
+    config.asr.require_streaming = _env_bool("SHENAVA_REQUIRE_STREAMING", config.asr.require_streaming)
+    config.asr.right_context = _env_int("SHENAVA_RIGHT_CONTEXT", config.asr.right_context)
+    audio_device = _env("SHENAVA_AUDIO_DEVICE")
+    if audio_device:
+        config.audio.device = int(audio_device) if audio_device.isdigit() else audio_device
+    config.asr.__post_init__()
+    config.audio.__post_init__()
 
     output_mode = _env("SHENAVA_OUTPUT_MODE")
     if output_mode:
@@ -352,7 +388,7 @@ class ConfigManager:
 
         if "output_mode" in data:
             kwargs["output_mode"] = _decode_enum(data["output_mode"], OutputMode)
-        for key in ("debug", "log_level", "save_transcripts", "transcripts_dir"):
+        for key in ("debug", "log_level", "save_transcripts", "transcripts_dir", "clinical_sqlite", "clinical_jsonl"):
             if key in data:
                 kwargs[key] = data[key]
         return AppConfig(**kwargs)

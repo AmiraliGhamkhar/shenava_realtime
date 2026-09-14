@@ -31,7 +31,7 @@ ARABIC_TO_PERSIAN = {
 # Harakat / koranic marks / filler characters that carry no meaning here.
 _STRIP_RANGES = ((0x064B, 0x065F), (0x0670, 0x0670), (0x06D6, 0x06ED))
 _STRIP_CHARS = {chr(code) for start, end in _STRIP_RANGES for code in range(start, end + 1)}
-_STRIP_CHARS.update({ZWJ, ZWSP, BOM, TATWEEL})
+_STRIP_CHARS.update({ZWJ, ZWSP, BOM, TATWEEL, "\u200e", "\u200f", *map(chr, range(0x202a, 0x202f)), *map(chr, range(0x2066, 0x206a))})
 
 _ARABIC_INDIC_TO_ASCII = str.maketrans("\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669", "0123456789")
 _PERSIAN_TO_ASCII = str.maketrans("\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9", "0123456789")
@@ -74,7 +74,11 @@ def digits_to_persian(text: str) -> str:
 def fix_punctuation(text: str) -> str:
     """No space before punctuation, exactly one space after it."""
     text = _RE_SPACE_BEFORE_PUNCT.sub(r"\1", text)
-    text = _RE_SPACE_AFTER_PUNCT.sub(r"\1 ", text)
+    # Keep decimals, thousands separators and ratios/times intact.
+    text = _RE_SPACE_AFTER_PUNCT.sub(
+        lambda m: m.group(0) if m.start() > 0 and text[m.start()-1].isdigit()
+        and m.end() < len(text) and text[m.end()].isdigit() else m.group(0) + " ", text
+    )
     return text
 
 
@@ -120,7 +124,8 @@ def normalize(
     text = unicodedata.normalize("NFKC", text)
     text = strip_marks(text)
     text = map_letters(text)
-    text = text.translate(QUOTES)
+    text = text.translate(QUOTES).replace("٫", ".")
+    text = re.sub(r"(?<=\d)٬(?=\d{3}(?:\D|$))", "", text)
     text = digits_to_ascii(text) if to_ascii_digits else digits_to_persian(text)
 
     # Collapse any whitespace run (tabs/newlines/NBSP from ASR output) and drop

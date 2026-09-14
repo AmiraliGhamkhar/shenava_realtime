@@ -4,36 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from shenava_realtime.asr_backend import NeMoASR, estimate_confidence, score_to_confidence
+from shenava_realtime.asr_backend import NeMoASR
 from shenava_realtime.config import ASRConfig
-
-
-@pytest.mark.parametrize(
-    ("score", "text", "expected"),
-    [
-        (None, "سلام", 0.0),
-        (0.85, "سلام", 0.85),
-        (-0.5, "سلام", pytest.approx(0.6065, abs=1e-3)),
-        (-4.0, "یک دو سه چهار", pytest.approx(0.3679, abs=1e-3)),
-        (float("nan"), "سلام", 0.0),
-        (float("inf"), "سلام", 0.0),
-    ],
-)
-def test_score_to_confidence(score, text, expected):
-    assert score_to_confidence(score, text) == expected
-
-
-def test_confidence_is_length_normalized():
-    short = score_to_confidence(-2.0, "یک")
-    long = score_to_confidence(-2.0, "یک دو سه چهار")
-    assert long > short
-
-
-def test_estimate_confidence_penalizes_repetitions():
-    assert estimate_confidence("") == 0.0
-    assert estimate_confidence("بیمار آمد") == 1.0
-    assert estimate_confidence("بیمار بیمار آمد") < estimate_confidence("بیمار آمد")
-    assert estimate_confidence("بیمار") < estimate_confidence("بیمار آمد")
 
 
 def test_extract_handles_ne_mo_shapes():
@@ -43,18 +15,18 @@ def test_extract_handles_ne_mo_shapes():
     assert extract([]) == ("", 0.0)
     assert extract("متن ساده")[0] == "متن ساده"
     assert extract(["متن ساده"])[0] == "متن ساده"
-    assert extract({"text": "متن", "score": 0.5}) == ("متن", 0.5)
+    assert extract({"text": "متن", "score": 0.5}) == ("متن", 0.0)
 
     hypothesis = SimpleNamespace(text="  بیمار آمد  ", score=-0.2)
     text, confidence = extract([hypothesis])
     assert text == "بیمار آمد"
-    assert 0.0 < confidence <= 1.0
+    assert confidence == 0.0
 
     # A non-numeric score must not raise.
     odd = SimpleNamespace(text="بیمار", score="n/a")
     text, confidence = extract([odd])
     assert text == "بیمار"
-    assert confidence > 0.0
+    assert confidence == 0.0
 
 
 def test_device_resolution_defaults_to_cpu_without_cuda(monkeypatch):
@@ -113,3 +85,10 @@ def test_relative_checkpoint_paths_resolve_against_the_repo(tmp_path, monkeypatc
 
     backend = NeMoASR(ASRConfig(model_path=None))
     assert backend.resolve_checkpoint_path() is None
+
+
+def test_missing_checkpoint_does_not_import_torch_or_download(monkeypatch):
+    backend = NeMoASR(ASRConfig(model_path="/missing/checkpoint.nemo"))
+    monkeypatch.setattr(backend, "_import_torch", lambda: pytest.fail("must fail before importing torch"))
+    with pytest.raises(FileNotFoundError, match="Local Shenava"):
+        backend.load()

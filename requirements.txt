@@ -1,9 +1,2 @@
-# Runtime dependencies (kept deliberately small).
-# The ASR model stack lives in requirements-asr.txt so that the text pipeline
-# and the test-suite install and run without torch/NeMo/GPU.
+# Core inference orchestration and deterministic text processing (Python 3.10+)
 numpy>=1.24,<3
-sounddevice>=0.4.6
-pynput>=1.7.6
-
-# Optional: clipboard backend on Linux/macOS (Windows uses ctypes directly).
-# pyperclip>=1.8.2
