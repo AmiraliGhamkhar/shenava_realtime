@@ -14,7 +14,7 @@ import nemo.collections.asr as nemo_asr
 
 t0 = time.time()
 model = nemo_asr.models.ASRModel.restore_from(
-    r"C:\Users\ali\Desktop\localASR-shenava\shenava-koochik\shenava-koochik-v1.0.nemo"
+    r"C:\Users\ali\Desktop\shenava_realtime\shenava-koochik\shenava-koochik-v1.0.nemo"
 )
 model.eval()
 print(f"model load: {time.time() - t0:.1f}s | type: {type(model).__name__}")

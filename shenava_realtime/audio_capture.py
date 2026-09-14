@@ -334,10 +334,10 @@ class AudioCapture:
         Args:
             chunk: Audio chunk with silence
         """
-        current_time = time.time()
-        
         # If we were speaking, accumulate silence
         if self.is_speaking:
+            # Keep silence chunks in buffer so the model sees trailing context
+            self.speech_buffer.append(chunk.data)
             self.silence_duration += chunk.duration
             
             # Check if silence is long enough to end speech

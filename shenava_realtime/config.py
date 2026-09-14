@@ -41,8 +41,8 @@ class AudioConfig:
     buffer_duration: float = 1.0
     overlap_duration: float = 0.2
     vad_threshold: float = 0.02
-    vad_min_speech: float = 0.1
-    vad_min_silence: float = 0.3
+    vad_min_speech: float = 0.5
+    vad_min_silence: float = 0.8
     noise_gate_threshold: float = 0.01
     apply_noise_reduction: bool = True
     max_buffer_duration: float = 15.0
@@ -52,8 +52,12 @@ class AudioConfig:
 @dataclass
 class ASRConfig:
     model_name: str = "Reza2kn/Shenava-Koochik-v1.0"
-    # Set SHENAVA_MODEL_PATH or this field to use an offline local model.
-    model_path: Optional[str] = field(default_factory=lambda: os.getenv("SHENAVA_MODEL_PATH"))
+    # Prefer SHENAVA_MODEL_PATH if set; otherwise fall back to the bundled
+    # .nemo checkpoint shipped under this project's shenava-koochik/ folder.
+    model_path: Optional[str] = field(
+        default_factory=lambda: os.getenv("SHENAVA_MODEL_PATH")
+        or str(Path(__file__).resolve().parent.parent / "shenava-koochik" / "shenava-koochik-v1.0.nemo")
+    )
     device: str = "cuda"
     context_size: list[int] = field(default_factory=lambda: [70, 13])
     streaming_chunk_duration: float = 1.0

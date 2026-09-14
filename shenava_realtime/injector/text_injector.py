@@ -304,20 +304,11 @@ class TextInjector:
             
             # Add space after if configured
             if self.config.send_space_after and not text.endswith(' '):
-                if hasattr(self.keyboard_injector, 'press'):
-                    self.keyboard_injector.press(' ')
-                    self.keyboard_injector.release(' ')
-                else:
-                    self.keyboard_injector.keyboard.type(' ')
+                self._press_key(' ')
             
             # Add enter after if configured
             if self.config.send_enter_after:
-                if hasattr(self.keyboard_injector, 'press'):
-                    self.keyboard_injector.press('enter')
-                    self.keyboard_injector.release('enter')
-                else:
-                    self.keyboard_injector.keyboard.press(self.keyboard_injector.Key.enter)
-                    self.keyboard_injector.keyboard.release(self.keyboard_injector.Key.enter)
+                self._press_key('enter')
             
             # Update statistics
             self.stats['total_injections'] += 1
@@ -351,6 +342,21 @@ class TextInjector:
                 if self.config.delay_between_keys > 0:
                     time.sleep(self.config.delay_between_keys)
     
+    def _press_key(self, key: str):
+        """Press and release a key, handling both pyautogui and pynput backends.
+
+        pyautogui exposes keyDown/keyUp (no ``release``); the pynput wrapper
+        exposes press/release. Dispatch on the pynput-only ``keyboard`` attr.
+        """
+        if hasattr(self.keyboard_injector, 'keyboard'):
+            # pynput wrapper
+            self.keyboard_injector.press(key)
+            self.keyboard_injector.release(key)
+        else:
+            # pyautogui
+            self.keyboard_injector.keyDown(key)
+            self.keyboard_injector.keyUp(key)
+
     def _inject_clipboard(self, text: str) -> InjectionResult:
         """
         Inject text using clipboard
