@@ -1,29 +1,9 @@
-# Core
+# Runtime dependencies (kept deliberately small).
+# The ASR model stack lives in requirements-asr.txt so that the text pipeline
+# and the test-suite install and run without torch/NeMo/GPU.
 numpy>=1.24,<3
-
-# PyTorch and NeMo ASR
-torch>=2.0
-torchaudio>=2.0
-nemo_toolkit[asr]>=2.0
-
-# Audio capture
 sounddevice>=0.4.6
-soundfile>=0.12.0
-
-# GUI / overlay (tkinter is included with standard Windows Python)
-# No extra GUI package is required
-
-# Text injection
-pyautogui>=0.9.54
 pynput>=1.7.6
-pyperclip>=1.8.2
-pygetwindow>=0.0.9
-pywin32>=306
 
-# Utilities
-tqdm>=4.65.0
-rich>=13.0.0
-psutil>=5.9.0
-
-# Persian text processing
-regex>=2024.0.0
+# Optional: clipboard backend on Linux/macOS (Windows uses ctypes directly).
+# pyperclip>=1.8.2

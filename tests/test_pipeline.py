@@ -1,0 +1,137 @@
+"""Streaming pipeline: deltas are emitted once and only when stable."""
+
+import numpy as np
+
+from shenava_realtime.pipeline import TranscriptionPipeline, text_delta
+from tests.fakes import make_pipeline
+
+
+def feed(pipeline: TranscriptionPipeline, chunks: int = 4) -> list:
+    deltas = []
+    for _ in range(chunks):
+        deltas.extend(pipeline.push_audio(np.zeros(8000, dtype=np.float32)))
+    return deltas
+
+
+def test_nothing_is_emitted_before_text_stabilizes():
+    pipeline, decoder = make_pipeline(["بیمار"], holdback_words=2)
+    pipeline.start_utterance()
+    assert feed(pipeline, 1) == []
+    assert pipeline.committed_text == ""
+    assert pipeline.partial_text == "بیمار"
+
+
+def test_deltas_reconstruct_the_transcript_exactly_once():
+    pipeline, _ = make_pipeline(
+        [
+            "بیمار",
+            "بیمار تحت",
+            "بیمار تحت عمل",
+            "بیمار تحت عمل کابج",
+            "بیمار تحت عمل کابج است",
+        ],
+        holdback_words=2,
+    )
+    pipeline.start_utterance()
+    emitted = feed(pipeline, 5)
+    emitted.extend(pipeline.end_utterance())
+
+    joined = "".join(emitted)
+    assert joined == "بیمار تحت عمل CABG است"
+    assert pipeline.committed_text == joined
+    # No word is emitted twice.
+    words = joined.split()
+    assert len(words) == len(set(words))
+
+
+def test_a_rewritten_hypothesis_never_duplicates_output():
+    pipeline, _ = make_pipeline(
+        [
+            "بیمار تحت عمل",
+            "بیمار زیر عمل",
+            "بیمار زیر عمل کابج",
+            "بیمار زیر عمل کابج است",
+        ],
+        holdback_words=1,
+    )
+    pipeline.start_utterance()
+    emitted = feed(pipeline, 4)
+    emitted.extend(pipeline.end_utterance())
+    joined = "".join(emitted)
+    assert joined == "بیمار زیر عمل CABG است"
+    assert joined.count("بیمار") == 1
+    assert joined.count("عمل") == 1
+
+
+def test_post_processing_is_applied_to_emitted_text():
+    pipeline, _ = make_pipeline(["سی و پنج درصد اکسیژن"], holdback_words=0)
+    pipeline.start_utterance()
+    feed(pipeline, 1)
+    emitted = pipeline.end_utterance()
+    assert "".join(emitted) == "35% اکسیژن"
+
+
+def test_window_reset_commits_before_restarting():
+    pipeline, _ = make_pipeline(
+        ["بیمار تحت عمل", "RESET:کابج انجام شد"],
+        holdback_words=1,
+    )
+    pipeline.start_utterance()
+    emitted = feed(pipeline, 2)
+    emitted.extend(pipeline.end_utterance())
+    # The reset commits the first window, then appends the next one (with the
+    # FST applied: کابج -> CABG) separated by a space.
+    assert "".join(emitted) == "بیمار تحت عمل CABG انجام شد"
+
+
+def test_abort_discards_the_utterance():
+    pipeline, _ = make_pipeline(["بیمار تحت عمل"], holdback_words=0)
+    pipeline.start_utterance()
+    feed(pipeline, 1)
+    pipeline.abort()
+    assert pipeline.committed_text == ""
+    assert pipeline.is_active is False
+
+
+def test_audio_outside_an_utterance_is_ignored():
+    pipeline, decoder = make_pipeline(["بیمار"], holdback_words=0)
+    assert pipeline.push_audio(np.zeros(8000, dtype=np.float32)) == []
+    assert decoder.pushes == 0
+
+
+def test_start_utterance_seeds_the_pre_roll():
+    pipeline, decoder = make_pipeline(["بیمار"], holdback_words=0)
+    pipeline.start_utterance(np.zeros(16000, dtype=np.float32))
+    assert decoder.pushes == 1
+
+
+def test_end_utterance_is_idempotent():
+    pipeline, _ = make_pipeline(["بیمار تحت عمل"], holdback_words=0)
+    pipeline.start_utterance()
+    feed(pipeline, 1)
+    first = pipeline.end_utterance()
+    assert "".join(first) == "بیمار تحت عمل"
+    assert pipeline.end_utterance() == []
+
+
+def test_confidence_is_tracked():
+    pipeline, _ = make_pipeline(["بیمار"], holdback_words=0)
+    pipeline.start_utterance()
+    feed(pipeline, 1)
+    assert pipeline.confidence > 0.0
+
+
+def test_text_delta_helper():
+    assert text_delta("", "بیمار") == "بیمار"
+    assert text_delta("بیمار", "بیمار تحت") == " تحت"
+    assert text_delta("بیمار تحت", "بیمار تحت") == ""
+    # A divergence falls back to the last word boundary, never mid-word.
+    assert text_delta("بیمار تحت عمل", "بیمار زیر عمل") == "زیر عمل"
+    assert text_delta("بیم", "بیمار") == "ار"
+
+
+def test_decoder_reset_between_utterances():
+    pipeline, decoder = make_pipeline(["بیمار"], holdback_words=0)
+    pipeline.start_utterance()
+    pipeline.start_utterance()
+    assert decoder.reset_calls == 2

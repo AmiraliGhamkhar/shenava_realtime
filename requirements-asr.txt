@@ -1,0 +1,7 @@
+# ASR model stack (Shenava Koochik runs on NeMo). Only needed to actually run
+# recognition; the deterministic post-processing and the tests do not need it.
+-r requirements.txt
+torch>=2.0
+torchaudio>=2.0
+nemo_toolkit[asr]>=2.0
+soundfile>=0.12.0

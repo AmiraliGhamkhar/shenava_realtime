@@ -1,408 +1,305 @@
+"""Microphone capture: 16 kHz mono, bounded queue, RMS VAD segmentation.
+
+Threading model (exactly two threads, no shared mutable audio state):
+
+* the PortAudio callback only copies the block and pushes it on a bounded
+  queue — it never blocks on inference and never touches the VAD;
+* a single consumer thread pops frames, runs the VAD and fires callbacks.
+
+Shutdown is explicit: ``stop()`` closes the stream, pushes a sentinel, joins
+the consumer thread, and the consumer flushes any open utterance before it
+exits, so the last sentence is not lost and no thread outlives the object.
 """
-Real-time audio capture with VAD and noise reduction
-"""
+
+from __future__ import annotations
+
+import logging
+import queue
+import threading
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
-import threading
-import queue
-import time
-from typing import Optional, Callable, Tuple, List, Dict
-from dataclasses import dataclass
-import warnings
 
-warnings.filterwarnings("ignore")
-
-try:
+try:  # pragma: no cover - optional at import time so tests run without it
     import sounddevice as sd
-    SOUNDDEVICE_AVAILABLE = True
-except ImportError:
-    SOUNDDEVICE_AVAILABLE = False
-    print("⚠️  sounddevice not available. Install with: pip install sounddevice")
+except ImportError:  # pragma: no cover
+    sd = None
 
 from .config import AudioConfig
+from .vad import EnergyVAD, EventType, VADEvent, VADConfig, VADState
 
+logger = logging.getLogger(__name__)
 
-@dataclass
-class AudioChunk:
-    """Audio chunk with metadata"""
-    data: np.ndarray
-    timestamp: float
-    duration: float
-    is_speech: bool = False
-    energy: float = 0.0
+# Control marker pushed through the audio queue so that state changes happen on
+# the consumer thread (the only thread allowed to touch the VAD).
+_CLEAR = object()
 
 
 class AudioCapture:
-    """
-    Real-time audio capture from microphone
-    
-    Features:
-    - Continuous audio capture
-    - Voice Activity Detection (VAD)
-    - Noise gate
-    - Buffer management
-    - Callback-based processing
-    """
-    
-    def __init__(self, config: AudioConfig):
-        """
-        Initialize audio capture
-        
-        Args:
-            config: Audio configuration
-        """
-        self.config = config
-        self.is_running = False
-        self.is_paused = False
-        
-        # Audio buffers
-        self.audio_queue = queue.Queue()
-        self.speech_buffer = []
-        self.silence_buffer = []
-        
-        # VAD state
-        self.is_speaking = False
-        self.speech_start_time = None
-        self.last_speech_time = None
-        self.silence_duration = 0.0
-        
-        # Statistics
-        self.stats = {
-            'total_chunks': 0,
-            'speech_chunks': 0,
-            'silence_chunks': 0,
-            'total_duration': 0.0,
-            'speech_duration': 0.0
-        }
-        
-        # Callbacks
-        self.on_speech_start: Optional[Callable] = None
-        self.on_speech_end: Optional[Callable] = None
-        self.on_chunk: Optional[Callable] = None
-        
-        # Thread management
-        self.capture_thread: Optional[threading.Thread] = None
-        self.processing_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
-        
-        # Audio stream
-        self.stream = None
-        
-        # Buffer for processing
-        self.buffer = []
-        self.buffer_duration = 0.0
-    
-    def start(self):
-        """Start audio capture"""
-        if not SOUNDDEVICE_AVAILABLE:
-            raise RuntimeError("sounddevice is required for audio capture")
-        
-        if self.is_running:
-            return
-        
-        print("🎤 Starting audio capture...")
-        
-        self.is_running = True
-        self.is_paused = False
-        self._stop_event.clear()
-        self.processing_thread = threading.Thread(target=self._processing_loop, name="audio-processing", daemon=True)
-        self.processing_thread.start()
-        
-        # Start audio stream
-        try:
-            self.stream = sd.InputStream(
-                channels=self.config.channels,
-                samplerate=self.config.sample_rate,
-                blocksize=self.config.chunk_size,
-                callback=self._audio_callback,
-            )
-            self.stream.start()
-        except Exception:
-            self.is_running = False
-            self._stop_event.set()
-            if self.stream:
-                self.stream.close()
-                self.stream = None
-            if self.processing_thread:
-                self.processing_thread.join(timeout=2.0)
-                self.processing_thread = None
-            raise
+    """Captures microphone audio and segments it into utterances."""
 
-        print("✅ Audio capture started")
-    
-    def stop(self):
-        """Stop audio capture"""
-        if not self.is_running:
-            return
-        
-        print("⏹️  Stopping audio capture...")
-        
-        self.is_running = False
-        self._stop_event.set()
-        
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-        
-        if self.processing_thread:
-            self.processing_thread.join(timeout=2.0)
-            self.processing_thread = None
-        
-        # Flush the final segment exactly once, including when stop is called
-        # while the microphone is mid-sentence.
-        if self.speech_buffer:
-            self._process_speech_end()
-        with self.audio_queue.mutex:
-            self.audio_queue.queue.clear()
-        
-        print("✅ Audio capture stopped")
-    
-    def pause(self):
-        """Pause audio capture"""
-        self.is_paused = True
-        print("⏸️  Audio capture paused")
-    
-    def resume(self):
-        """Resume audio capture"""
-        self.is_paused = False
-        print("▶️  Audio capture resumed")
-    
-    def _audio_callback(self, indata, frames, time_info, status):
-        """
-        Callback for audio stream
-        
-        Args:
-            indata: Input audio data
-            frames: Number of frames
-            time_info: Time information
-            status: Status flags
-        """
-        if status:
-            print(f"⚠️  Audio status: {status}")
-        
-        if self.is_paused:
-            return
-        
-        # Extract audio data
-        audio_data = indata[:, 0].copy()
-        
-        # Add to queue
-        self.audio_queue.put(audio_data)
-    
-    def _processing_loop(self):
-        """Main processing loop for audio chunks"""
-        while not self._stop_event.is_set() or not self.audio_queue.empty():
-            try:
-                audio_data = self.audio_queue.get(timeout=0.1)
-                
-                # Process chunk
-                self._process_chunk(audio_data)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"❌ Error in processing loop: {e}")
-    
-    def _process_chunk(self, audio_data: np.ndarray):
-        """
-        Process a single audio chunk
-        
-        Args:
-            audio_data: Audio data (1D numpy array)
-        """
-        # Calculate energy
-        energy = self._calculate_energy(audio_data)
-        
-        # Apply noise gate
-        if energy < self.config.noise_gate_threshold:
-            audio_data = audio_data * 0.1  # Reduce noise
-        
-        # VAD detection
-        is_speech = self._detect_speech(audio_data, energy)
-        
-        # Create chunk
-        chunk = AudioChunk(
-            data=audio_data,
-            timestamp=time.time(),
-            duration=len(audio_data) / self.config.sample_rate,
-            is_speech=is_speech,
-            energy=energy
+    def __init__(self, config: Optional[AudioConfig] = None, vad: Optional[EnergyVAD] = None) -> None:
+        self.config = config or AudioConfig()
+        self.vad = vad or EnergyVAD(
+            VADConfig(
+                sample_rate=self.config.sample_rate,
+                onset_rms=self.config.vad_onset_rms,
+                offset_rms=self.config.vad_offset_rms,
+                min_speech_ms=self.config.vad_min_speech_ms,
+                min_silence_ms=self.config.vad_min_silence_ms,
+                pre_speech_ms=self.config.vad_pre_speech_ms,
+                max_speech_s=self.config.vad_max_speech_s,
+            )
         )
-        
-        # Update statistics
-        self.stats['total_chunks'] += 1
-        self.stats['total_duration'] += chunk.duration
-        
-        if is_speech:
-            self.stats['speech_chunks'] += 1
-            self.stats['speech_duration'] += chunk.duration
-        else:
-            self.stats['silence_chunks'] += 1
-        
-        # Handle speech/silence transitions
-        if is_speech:
-            self._handle_speech(chunk)
-        else:
-            self._handle_silence(chunk)
-        
-        # Trigger chunk callback
-        if self.on_chunk:
-            self.on_chunk(chunk)
-    
-    def _calculate_energy(self, audio_data: np.ndarray) -> float:
+
+        # Callbacks (set by the engine; invoked on the consumer thread only).
+        self.on_speech_start: Optional[Callable[[np.ndarray], None]] = None
+        self.on_speech_end: Optional[Callable[[float], None]] = None
+        self.on_audio: Optional[Callable[[np.ndarray, bool], None]] = None
+
+        self._queue: "queue.Queue[Optional[np.ndarray]]" = queue.Queue(
+            maxsize=max(8, self.config.queue_max_chunks)
+        )
+        self._thread: Optional[threading.Thread] = None
+        self._stream: Any = None
+        self._paused = False
+        self._lock = threading.RLock()
+        self._dropped_chunks = 0
+        self._warned_drop = False
+
+        self.stats: Dict[str, float] = {
+            "chunks": 0,
+            "dropped_chunks": 0,
+            "speech_chunks": 0,
+            "audio_seconds": 0.0,
+            "speech_seconds": 0.0,
+            "segments": 0,
+        }
+
+    # ------------------------------------------------------------------ #
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def is_speaking(self) -> bool:
+        return self.vad.state is VADState.SPEECH
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    # ------------------------------------------------------------------ #
+    def start(self) -> None:
+        """Open the input stream and start the consumer thread."""
+        if sd is None:
+            raise RuntimeError("sounddevice is required for audio capture (pip install sounddevice)")
+        with self._lock:
+            if self.is_running:
+                logger.debug("audio capture already running")
+                return
+
+            logger.info(
+                "starting audio capture: %d Hz, %d ch, %d-sample blocks",
+                self.config.sample_rate,
+                self.config.channels,
+                self.config.chunk_size,
+            )
+            self.vad.reset()
+            self._paused = False
+            self._thread = threading.Thread(target=self._consume_loop, name="audio-capture", daemon=True)
+            self._thread.start()
+
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=self.config.sample_rate,
+                    channels=self.config.channels,
+                    blocksize=self.config.chunk_size,
+                    dtype="float32",
+                    device=self.config.device,
+                    callback=self._audio_callback,
+                )
+                self._stream.start()
+            except Exception:
+                logger.exception("could not open the microphone")
+                self._shutdown_thread()
+                raise
+            logger.info("audio capture running")
+
+    def stop(self) -> None:
+        """Close the stream, join the consumer and flush the open segment."""
+        with self._lock:
+            thread = self._thread
+            stream = self._stream
+            if thread is None and stream is None:
+                return
+            logger.info("stopping audio capture")
+            self._thread = None
+            self._stream = None
+
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                logger.exception("error while closing the audio stream")
+
+        if thread is not None:
+            self._push_sentinel()
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                logger.warning("audio consumer thread did not exit within 3s")
+        logger.info("audio capture stopped")
+
+    def pause(self) -> None:
+        self._paused = True
+        logger.info("audio capture paused")
+
+    def resume(self) -> None:
+        self._paused = False
+        logger.info("audio capture resumed")
+
+    def clear(self) -> None:
+        """Reset the detector (hotkey: clear).
+
+        The request travels through the audio queue so the VAD is only ever
+        mutated by the consumer thread.
         """
-        Calculate audio energy
-        
-        Args:
-            audio_data: Audio data
-            
-        Returns:
-            Energy value (RMS)
-        """
-        if len(audio_data) == 0:
-            return 0.0
-        
-        # Calculate RMS energy
-        rms = np.sqrt(np.mean(audio_data ** 2))
-        return float(rms)
-    
-    def _detect_speech(self, audio_data: np.ndarray, energy: float) -> bool:
-        """
-        Detect if audio contains speech using simple VAD
-        
-        Args:
-            audio_data: Audio data
-            energy: Audio energy
-            
-        Returns:
-            True if speech is detected
-        """
-        # Simple energy-based VAD
-        if energy > self.config.vad_threshold:
-            return True
-        
-        # Check for speech pattern (zero-crossing rate)
-        if len(audio_data) > 1:
-            zero_crossings = np.sum(np.diff(np.sign(audio_data)) != 0)
-            zcr = zero_crossings / len(audio_data)
-            
-            # Speech typically has moderate ZCR
-            if 0.05 < zcr < 0.5 and energy > self.config.vad_threshold * 0.5:
-                return True
-        
-        return False
-    
-    def _handle_speech(self, chunk: AudioChunk):
-        """
-        Handle speech detection
-        
-        Args:
-            chunk: Audio chunk with speech
-        """
-        current_time = time.time()
-        
-        # If we weren't speaking, this is speech start
-        if not self.is_speaking:
-            self.is_speaking = True
-            self.speech_start_time = current_time
-            
-            # Trigger speech start callback
-            if self.on_speech_start:
-                self.on_speech_start()
-            
-            print("🎤 Speech started")
-        
-        # Add to speech buffer
-        self.speech_buffer.append(chunk.data)
-        
-        # Update last speech time
-        self.last_speech_time = current_time
-        self.silence_duration = 0.0
-        
-        # Check if buffer is full
-        buffer_duration = sum(len(c) for c in self.speech_buffer) / self.config.sample_rate
-        
-        if buffer_duration >= self.config.max_buffer_duration:
-            self._process_speech_end()
-    
-    def _handle_silence(self, chunk: AudioChunk):
-        """
-        Handle silence detection
-        
-        Args:
-            chunk: Audio chunk with silence
-        """
-        # If we were speaking, accumulate silence
-        if self.is_speaking:
-            # Keep silence chunks in buffer so the model sees trailing context
-            self.speech_buffer.append(chunk.data)
-            self.silence_duration += chunk.duration
-            
-            # Check if silence is long enough to end speech
-            if self.silence_duration >= self.config.vad_min_silence:
-                self._process_speech_end()
-    
-    def _process_speech_end(self):
-        """Process end of speech segment"""
-        if not self.speech_buffer:
+        try:
+            self._queue.put_nowait(_CLEAR)
+        except queue.Full:
+            logger.debug("audio queue full; the clear request was dropped")
+
+    # ------------------------------------------------------------------ #
+    def _audio_callback(self, indata, frames, time_info, status) -> None:  # pragma: no cover - I/O
+        if status:
+            logger.warning("audio stream status: %s", status)
+        if self._paused:
             return
-        
-        # Combine speech buffer
-        speech_data = np.concatenate(self.speech_buffer)
-        speech_duration = len(speech_data) / self.config.sample_rate
-        
-        # Check if speech is long enough
-        if speech_duration >= self.config.vad_min_speech:
-            # Trigger speech end callback
-            if self.on_speech_end:
-                self.on_speech_end(speech_data, speech_duration)
-            
-            print(f"🎤 Speech ended: {speech_duration:.2f}s")
-        
-        # Clear buffer
-        self.speech_buffer = []
-        self.is_speaking = False
-        self.silence_duration = 0.0
-    
-    def get_current_buffer(self) -> Optional[np.ndarray]:
-        """
-        Get current audio buffer for streaming processing
-        
-        Returns:
-            Current audio buffer or None if empty
-        """
-        if not self.speech_buffer:
-            return None
-        
-        # Combine all chunks
-        return np.concatenate(self.speech_buffer)
-    
-    def clear_buffer(self):
-        """Clear audio buffers"""
-        self.speech_buffer = []
-        self.silence_buffer = []
-    
-    def get_statistics(self) -> Dict:
-        """Get capture statistics"""
-        return self.stats.copy()
-    
-    def list_devices(self) -> List[Dict]:
-        """List available audio devices"""
-        if not SOUNDDEVICE_AVAILABLE:
+        try:
+            block = np.ascontiguousarray(indata[:, 0], dtype=np.float32)
+            self._queue.put_nowait(block)
+        except queue.Full:
+            self._dropped_chunks += 1
+            if not self._warned_drop:
+                self._warned_drop = True
+                logger.warning("audio queue full (%d); dropping blocks until it drains", self._queue.maxsize)
+
+    def _push_sentinel(self) -> None:
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            with self._queue.mutex:
+                self._queue.queue.clear()
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:  # pragma: no cover - defensive
+                logger.error("could not signal the audio consumer to stop")
+
+    def _shutdown_thread(self) -> None:
+        thread, self._thread = self._thread, None
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                logger.exception("error while closing the audio stream")
+        if thread is not None:
+            self._push_sentinel()
+            thread.join(timeout=3.0)
+
+    # ------------------------------------------------------------------ #
+    def _consume_loop(self) -> None:
+        try:
+            while True:
+                block = self._queue.get()
+                if block is None:
+                    break
+                self._process_item(block)
+        except Exception:
+            logger.exception("audio consumer crashed")
+        finally:
+            try:
+                for event in self.vad.flush():
+                    self._dispatch(event)
+            except Exception:
+                logger.exception("error while flushing the VAD segment")
+            self.stats["dropped_chunks"] = self._dropped_chunks
+
+    def _process_item(self, block) -> None:
+        if block is _CLEAR:
+            self.vad.reset()
+            logger.debug("VAD reset")
+            return
+        self._consume(block)
+
+    def _consume(self, block: np.ndarray) -> None:
+        duration = block.size / float(self.config.sample_rate)
+
+        # Hand the block to the streaming consumer *before* the boundary
+        # events, so an utterance always has all of its audio when it ends.
+        in_speech = self.vad.state is not VADState.SILENCE
+        if self.on_audio is not None:
+            try:
+                self.on_audio(block, in_speech)
+            except Exception:
+                logger.exception("on_audio callback failed")
+
+        try:
+            events = self.vad.process(block)
+        except Exception:
+            logger.exception("VAD failed on a %d-sample block", block.size)
+            return
+
+        self.stats["chunks"] += 1
+        self.stats["audio_seconds"] += duration
+        if self.vad.state is not VADState.SILENCE:
+            self.stats["speech_chunks"] += 1
+            self.stats["speech_seconds"] += duration
+
+        for event in events:
+            self._dispatch(event)
+
+    def _dispatch(self, event: VADEvent) -> None:
+        if event.type is EventType.SPEECH_START:
+            self.stats["segments"] += 1
+            logger.info("speech started (%.2fs pre-roll)", event.duration_s)
+            if self.on_speech_start is not None:
+                try:
+                    self.on_speech_start(event.audio if event.audio is not None else np.zeros(0, dtype=np.float32))
+                except Exception:
+                    logger.exception("on_speech_start callback failed")
+        else:
+            logger.info("speech ended (%.2fs)", event.duration_s)
+            if self.on_speech_end is not None:
+                try:
+                    self.on_speech_end(event.duration_s)
+                except Exception:
+                    logger.exception("on_speech_end callback failed")
+
+    # ------------------------------------------------------------------ #
+    def get_statistics(self) -> Dict[str, float]:
+        stats = dict(self.stats)
+        stats["dropped_chunks"] = self._dropped_chunks
+        stats["vad_state"] = self.vad.state.value
+        return stats
+
+    @staticmethod
+    def list_devices() -> List[Dict[str, Any]]:
+        """List input devices (empty list when sounddevice is unavailable)."""
+        if sd is None:
+            logger.warning("sounddevice is not installed; cannot list audio devices")
             return []
-        
-        devices = sd.query_devices()
-        input_devices = []
-        
-        for i, device in enumerate(devices):
-            if device['max_input_channels'] > 0:
-                input_devices.append({
-                    'index': i,
-                    'name': device['name'],
-                    'channels': device['max_input_channels'],
-                    'sample_rate': device['default_samplerate']
-                })
-        
-        return input_devices
+        devices = []
+        for index, device in enumerate(sd.query_devices()):
+            if device.get("max_input_channels", 0) > 0:
+                devices.append(
+                    {
+                        "index": index,
+                        "name": device["name"],
+                        "channels": device["max_input_channels"],
+                        "default_samplerate": device["default_samplerate"],
+                    }
+                )
+        return devices
