@@ -2,7 +2,13 @@
 
 import pytest
 
-from shenava_realtime.fa_numbers import convert_numbers, format_number, parse_number_phrase
+from shenava_realtime.fa_numbers import (
+    convert_numbers,
+    format_number,
+    leading_number_span,
+    open_number_tail,
+    parse_number_phrase,
+)
 
 
 @pytest.mark.parametrize(
@@ -76,3 +82,48 @@ def test_format_number_styles():
 def test_conversion_is_idempotent():
     once = convert_numbers("سی و پنج درصد از بیماران")
     assert convert_numbers(once) == once
+
+
+# --------------------------------------------------------------------------- #
+# Forced segment boundaries: an open phrase must never parse as a value.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("text", "tail"),
+    [
+        ("بیمار دوز سی و", "سی و"),
+        ("صد و", "صد و"),
+        ("دو هزار و", "دو هزار و"),
+        ("سه ممیز", "سه ممیز"),
+        # Complete phrases and non-number tails stay untouched.
+        ("سی و پنج", ""),
+        ("دو و نیم", ""),
+        ("تب و", ""),
+        ("بیمار آمد", ""),
+        ("", ""),
+    ],
+)
+def test_open_number_tail(text: str, tail: str):
+    assert open_number_tail(text) == tail
+
+
+@pytest.mark.parametrize(
+    ("text", "span"),
+    [
+        ("پنج میلی گرم", "پنج"),
+        ("صفر پنج لیتر", "صفر پنج"),
+        ("پنج", "پنج"),
+        ("و پنج", "و پنج"),
+        ("میلی گرم", ""),
+        ("بیمار", ""),
+    ],
+)
+def test_leading_number_span(text: str, span: str):
+    assert leading_number_span(text) == span
+
+
+def test_forced_halves_are_flagged_not_parsed():
+    """Regression: 'سی و' | 'پنج' parsed as 30 and 5 instead of being flagged."""
+    assert open_number_tail("سی و") == "سی و"
+    assert leading_number_span("پنج") == "پنج"
+    # Reunited, the phrase is complete and parses normally.
+    assert open_number_tail("سی و پنج") == ""

@@ -135,3 +135,65 @@ def test_decoder_reset_between_utterances():
     pipeline.start_utterance()
     pipeline.start_utterance()
     assert decoder.reset_calls == 2
+
+
+# --------------------------------------------------------------------------- #
+# Forced VAD/ASR-cap boundaries must not complete number phrases.
+# --------------------------------------------------------------------------- #
+def _fresh(pipeline, decoder, hypothesis):
+    decoder.reset()
+    decoder._hypotheses[:] = [hypothesis]
+    pipeline.start_utterance()
+
+
+def test_forced_boundary_keeps_open_number_tail_unparsed():
+    """'سی و' | forced cut | 'پنج' must not become '30' and '5'."""
+    pipeline, decoder = make_pipeline(["بیمار دوز سی و"], holdback_words=2)
+    pipeline.start_utterance()
+    first = pipeline.end_utterance(forced=True)
+    assert "".join(first) == "بیمار دوز سی و"  # spoken words kept, no digits
+
+    _fresh(pipeline, decoder, "پنج میلی گرم")
+    second = pipeline.end_utterance()  # natural end: leading run still protected
+    assert "".join(second) == "پنج mg"
+    assert "5" not in "".join(second)
+
+    # The continuation flag is consumed: a later standalone phrase parses.
+    _fresh(pipeline, decoder, "پنج")
+    third = pipeline.end_utterance()
+    assert "".join(third) == "5"
+
+
+def test_natural_endpoint_keeps_per_utterance_parsing():
+    """A natural end is not tagged: documented per-utterance behavior stands."""
+    pipeline, decoder = make_pipeline(["سی و"], holdback_words=2)
+    pipeline.start_utterance()
+    assert "".join(pipeline.end_utterance()) == "30 و"
+
+    _fresh(pipeline, decoder, "پنج")
+    assert "".join(pipeline.end_utterance()) == "5"
+    assert pipeline._split_continues is False
+
+
+def test_asr_window_reset_protects_the_number_across_the_cap():
+    """Decoder-cap reset inside one utterance gets the same protection."""
+    pipeline, decoder = make_pipeline(["دوز سی و", "RESET:پنج میلی گرم"], holdback_words=2)
+    pipeline.start_utterance()
+    emitted = feed(pipeline, 1)  # "دوز سی و"
+    emitted.extend(feed(pipeline, 1))  # RESET -> commit + fresh accumulation
+    emitted.extend(pipeline.end_utterance())
+    joined = "".join(emitted)
+    assert "30" not in joined and joined.count("پنج") == 1
+    assert "سی و" in joined and "پنج mg" in joined
+
+
+def test_abort_clears_pending_forced_continuation():
+    pipeline, decoder = make_pipeline(["دوز سی و"], holdback_words=2)
+    pipeline.start_utterance()
+    pipeline.end_utterance(forced=True)
+    assert pipeline._split_continues is True
+    pipeline.abort()
+    assert pipeline._split_continues is False
+
+    _fresh(pipeline, decoder, "پنج")
+    assert "".join(pipeline.end_utterance()) == "5"

@@ -1,5 +1,6 @@
 """Pure helpers of the ASR backend (no torch, no checkpoint)."""
 
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -92,3 +93,38 @@ def test_missing_checkpoint_does_not_import_torch_or_download(monkeypatch):
     monkeypatch.setattr(backend, "_import_torch", lambda: pytest.fail("must fail before importing torch"))
     with pytest.raises(FileNotFoundError, match="Local Shenava"):
         backend.load()
+
+
+# --------------------------------------------------------------------------- #
+# Right-context vs. encoder metadata: reject, never degrade silently.
+# --------------------------------------------------------------------------- #
+def _model(contexts=None, native=True):
+    encoder = types.SimpleNamespace(att_context_size_all=contexts)
+    model = types.SimpleNamespace(encoder=encoder)
+    if native:
+        model.conformer_stream_step = lambda **kwargs: None
+    return model
+
+
+def test_supported_contexts_enable_streaming():
+    contexts = [[70, 13], [70, 6], [70, 1], [70, 0]]
+    for right in (0, 1, 6, 13):
+        assert NeMoASR._check_streaming_context(_model(contexts), right) is True
+
+
+def test_unsupported_right_context_fails_at_startup():
+    """Regression: [70, 13] on a [70, 0]-only encoder degraded to endpoint-only."""
+    model = _model([[70, 0]])
+    with pytest.raises(RuntimeError, match="right_context=13"):
+        NeMoASR._check_streaming_context(model, 13)
+
+
+def test_offline_checkpoint_keeps_the_documented_endpoint_fallback():
+    contexts = [[70, 13], [70, 6], [70, 1], [70, 0]]
+    assert NeMoASR._check_streaming_context(_model(contexts, native=False), 13) is False
+    # No streaming API even at a matching context: endpoint-only, no raise.
+    assert NeMoASR._check_streaming_context(_model(contexts, native=False), 0) is False
+
+
+def test_missing_context_metadata_never_enables_streaming():
+    assert NeMoASR._check_streaming_context(_model(None), 13) is False

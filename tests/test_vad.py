@@ -143,3 +143,22 @@ def test_invalid_thresholds_are_rejected():
 def test_empty_frames_are_ignored(vad: EnergyVAD):
     assert vad.process(np.zeros(0, dtype=np.float32)) == []
     assert vad.state is VADState.SILENCE
+
+
+def test_forced_cut_events_are_tagged(vad: EnergyVAD):
+    """A segment-cap cut is tagged forced; natural endpoints are not."""
+    vad.config.max_speech_s = 1.0
+    events = run(vad, block(1.2, LOUD))
+    cut_ends = [e for e in events if e.type is EventType.SPEECH_END and e.forced]
+    assert cut_ends, "the forced cut was not tagged"
+    # The cut is immediately followed by a fresh START (still speaking).
+    assert events[events.index(cut_ends[0]) + 1].type is EventType.SPEECH_START
+    for event in run(vad, block(1.0, QUIET)):
+        if event.type is EventType.SPEECH_END:
+            assert event.forced is False  # natural silence endpoint
+
+
+def test_flush_events_are_never_forced(vad: EnergyVAD):
+    run(vad, block(0.5, LOUD))
+    for event in vad.flush():
+        assert event.forced is False

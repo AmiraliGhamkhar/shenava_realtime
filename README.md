@@ -114,6 +114,11 @@ launcher for detached desktop use; prefer the foreground command while debugging
   explicit initialization error. Online normalization may differ in accuracy
   from the publisher's offline evaluation—measure on your own audio.
 - Default right context is 13 for quality. Choose 6, 1 or 0 for less lookahead.
+  Values outside `{0, 1, 6, 13}` are rejected when the configuration loads.
+  A streaming-capable encoder that does not list `[70, right_context]` in its
+  metadata fails at startup with the supported contexts; only checkpoints with
+  no native streaming support fall back to endpoint-only decoding (with an
+  explicit warning, and rejected under `require_streaming`).
   Koochik's encoder step is approximately 80 ms; this is **not** an end-to-end
   latency guarantee. NeMo metadata determines chunk/shift/cache sizes.
 - `partial_interval_s` (default 0.5 s) batches new mic blocks before handing them
@@ -126,6 +131,12 @@ launcher for detached desktop use; prefer the foreground command while debugging
   to your microphone's gain/noise; this detector is not speech classification.
   Continuous speech creates explicit END/START boundaries without replaying
   audio. Phrases crossing a forced boundary may lose linguistic context.
+  Forced cuts (VAD segment cap, ASR window cap) are tagged and never treated
+  as natural endpoints: a number phrase left open at the cut (``سی و`` |
+  ``پنج``) keeps its spoken words unparsed and logs a warning instead of being
+  completed into a wrong value (``30`` + ``5``). A phrase cut *between* two
+  complete halves (``سی`` | ``پنج``) can still parse as two values — no
+  context model decides this; treat forced-split output as reviewable.
 - ASR segment cap: 22 s including pre-roll. Raw/features/caches/hypotheses are
   reset at each endpoint. Audio and ASR queues default to 32 blocks (~2 s each
   at 64 ms/block); overlay/injector queues are 64 items, clinical queue 32.
@@ -136,6 +147,11 @@ launcher for detached desktop use; prefer the foreground command while debugging
   recover. A worker that exceeds the shutdown timeout retains its live handle,
   preventing a second worker from starting over it. Python cannot forcibly
   interrupt a hung CUDA/driver call; terminate the process if it never returns.
+- A capture heartbeat detects an input device that stops delivering blocks
+  (`dropout_timeout_s`, default 2 s; distinct from queue overflow, which means
+  blocks arrive faster than they are consumed). The stall is logged as an
+  error, counted in `dropouts`/`last_error`, and an open utterance is aborted
+  through the explicit discontinuity path instead of stalling silently.
 - In-memory session text is a bounded rolling tail (20,000 characters/200
   segment history), **not an unlimited archival record**.
 
@@ -158,7 +174,9 @@ win over `.env`. Useful environment variables:
 JSON exposes the VAD, UI and optional output settings in `config.py`.
 `commit_on_endpoint=false` retains an experimental early-commit mode for API
 compatibility; it cannot retract a committed prefix and is not recommended for
-medical injection. Conflicting rewritten tails are suppressed, not re-injected.
+medical injection — startup **refuses** that mode when injection or
+`--clinical-sqlite`/`--clinical-jsonl` is enabled, instead of trusting a
+warning. Conflicting rewritten tails are suppressed, not re-injected.
 
 Compatibility: callbacks still accept `(text, confidence)` and decode results
 retain their second numeric slot, but the production backend always supplies
@@ -193,7 +211,8 @@ explicit numeric ratios are retained. This is deliberately a small grammar,
 not full Persian language understanding; extend it with reviewed examples/tests.
 
 Custom terminology: `PostProcessor(extra_terms={"spoken form": "canonical"})`.
-Conflicting trie rules raise rather than silently replacing each other.
+Conflicting trie rules raise at `PostProcessor` construction time, before any
+audio runs — never lazily on first match.
 
 ## Optional clinical extraction / persistence
 
@@ -215,6 +234,11 @@ JSONL appends one record per line. These independent sinks are not a distributed
 atomic transaction; disk errors are explicit and do not block ASR. Queue overflow
 reports an unstored record. Inspect logs and reconcile against the reviewed
 transcript; neither sink promises delivery after process termination.
+**Accepted risk, disclosed:** there is deliberately **no reconciliation on
+restart** between what was injected/displayed and what reached the clinical
+sinks. A crash (or kill) between an injection and the clinical write loses that
+utterance's record permanently; a restart never replays or back-fills it. The
+reviewed transcript/console output is the only complete record of the session.
 
 **Privacy:** transcript saving and clinical persistence are opt-in. Console,
 clipboard and injection intentionally expose text to the selected destination.

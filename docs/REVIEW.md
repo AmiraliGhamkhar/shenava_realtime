@@ -85,3 +85,33 @@ on the actual deployment machine before use.
 - Python compilation and `git diff --check` pass.
 - Real checkpoint/microphone/GPU tests: not run; no local weights/NeMo and CPU
   Torch wheel provisioning failed with TLS errors.
+
+## Second-pass review: doc-review hypotheses checked against the source
+
+Each hypothesis below was verified in the actual code before any change; two
+were already satisfied and only needed an explicit regression pin.
+
+| Finding | Change |
+|---|---|
+| A forced VAD/ASR-cap split (e.g. `سی و` \| `پنج`) was indistinguishable from a natural endpoint and each half parsed as a complete wrong value (`30 و` + `5`); `VADEvent` carried no forced flag and the pipeline treated every END identically | Forced cuts are tagged end to end (`VADEvent.forced` → `on_speech_end(duration, forced)` → engine queue item → `pipeline.end_utterance(forced=)`; ASR window resets count as forced too). New pure helpers `fa_numbers.open_number_tail` / `leading_number_span` detect an unfinished phrase; the pipeline keeps the boundary-spanning words unparsed (spoken words visible, warning logged, `forced_splits` counter) instead of parsing each half. Natural endpoints keep the documented per-utterance behavior; a cut between two complete halves (`سی` \| `پنج`) remains undecidable without context and is disclosed in the README |
+| `commit_on_endpoint=false` (early-commit legacy mode) had no enforcement — only README wording — so it could run with injection or clinical persistence active | Hard startup refusal in `ShenavaApp.__init__` (`ValueError` → readable `error:` exit 1), same fail-explicit pattern as the `require_streaming`/local-checkpoint checks. The mode still loads when no medical output path is configured |
+| Crash/kill between injection and clinical persistence: confirmed there is no reconciliation on restart — `ClinicalWorker` is append-only, the injector keeps no journal, nothing replays or back-fills | Documented as an explicit accepted risk in README (clinical section) and the limits list above; no reconciliation system built, per the deterministic-architecture constraint |
+| `--right-context`: values outside `{0,1,6,13}` were already rejected at config load (CLI choices + `ASRConfig.__post_init__`), but a *metadata*-unsupported yet set-valid value silently degraded to endpoint-only decoding with a warning | `NeMoASR._check_streaming_context` now fails at startup (`RuntimeError` listing the encoder's supported contexts) when a streaming-capable encoder lacks `[70, right_context]`. Only checkpoints with no native streaming support at all keep the documented endpoint-only fallback |
+| `PostProcessor(extra_terms=...)` conflicts: verified they already raise at construction time (`build_rewriter` → `TrieFST.add` during `__init__`), not lazily on first match | No source change. Added a regression pin: conflicting extra terms (against each other and against built-in tables) raise `ValueError` at construction; an identical restatement is not a conflict |
+| Audio device dropout: confirmed no detection path — the capture consumer blocked forever on `queue.get()`, so a silent/disconnected mic stalled the app silently (distinct from queue overflow, which was handled) | Capture heartbeat: consumer polls with a timeout (`AudioConfig.dropout_timeout_s`, default 2 s, validated). A stall is reported once per episode as a logged error + `dropouts`/`last_error` statistics, an inactive stream reports immediately, an open utterance is aborted through the existing discontinuity path, and recovery logs when blocks resume. Paused/stopping/closed states never false-positive |
+
+## Checks executed in the second pass
+
+- Before changes: `.venv/bin/pytest -q` — 245 passed; `python main.py --self-test`
+  emits `بیمار دوز 2.5 mg` and extracts the 2.5 mg measurement.
+- After changes: `.venv/bin/pytest -q` — 283 passed (38 new regression tests,
+  3 existing callbacks updated for the `forced` flag); `python main.py
+  --self-test` passes unchanged; `python -m compileall` and `git diff --check`
+  pass.
+- No new services, frameworks, dependencies or fuzzy/ML matching; all
+  mitigations are deterministic and fail-explicit.
+- Remaining disclosed limit: a forced cut between two *complete-looking*
+  number halves (e.g. `سی` \| `پنج`, no trailing connector) cannot be
+  distinguished from two separate values without linguistic context, so only
+  open phrases (trailing `و`/`ممیز`) and the mirrored leading run are
+  suppressed; the rest stays reviewable output as before.

@@ -6,6 +6,7 @@ import pytest
 
 from shenava_realtime.config import (
     AppConfig,
+    AudioConfig,
     ConfigManager,
     DigitStyle,
     InjectorMode,
@@ -132,3 +133,13 @@ def test_missing_file_falls_back_to_defaults(tmp_path):
 
 def test_chunk_duration_helper():
     assert AppConfig().audio.chunk_duration == pytest.approx(0.064)
+
+
+def test_dropout_timeout_is_bounded():
+    assert AppConfig().audio.dropout_timeout_s == 2.0
+    with pytest.raises(ValueError):
+        AudioConfig(dropout_timeout_s=0)
+    with pytest.raises(ValueError):
+        AudioConfig(dropout_timeout_s=61)
+    with pytest.raises(ValueError):
+        AudioConfig(dropout_timeout_s=float("nan"))

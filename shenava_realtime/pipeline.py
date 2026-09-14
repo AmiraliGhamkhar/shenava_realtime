@@ -19,6 +19,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from . import fa_numbers
 from .postprocessor import PostProcessor
 from .stabilizer import StabilizerConfig, TranscriptStabilizer
 from .streaming import StreamingDecoder
@@ -73,6 +74,9 @@ class TranscriptionPipeline:
         self._decodes = 0
         self._decode_seconds = 0.0
         self._active = False
+        # Forced VAD/ASR-cap boundary tracking (never set by a natural end).
+        self._boundary_forced = False
+        self._split_continues = False
 
     # ------------------------------------------------------------------ #
     @property
@@ -106,13 +110,19 @@ class TranscriptionPipeline:
 
     # ------------------------------------------------------------------ #
     def start_utterance(self, preroll: Optional[np.ndarray] = None) -> List[str]:
-        """Begin a new utterance, discarding any leftover state."""
+        """Begin a new utterance, discarding any leftover state.
+
+        ``_split_continues`` deliberately survives: a forced boundary already
+        tagged the previous segment's tail as an unfinished number phrase, so
+        this segment's leading number words must stay unparsed.
+        """
         self.decoder.reset()
         self.stabilizer.reset()
         self._emitted = ""
         self._prefix = ""
         self._confidence = 0.0
         self._latest = ""
+        self._boundary_forced = False
         self._active = True
         if preroll is not None and np.asarray(preroll).size:
             return self.push_audio(np.asarray(preroll, dtype=np.float32))
@@ -131,11 +141,18 @@ class TranscriptionPipeline:
         self._confidence = result.confidence or self._confidence
         return self._fold(result.text, reset=result.reset)
 
-    def end_utterance(self) -> List[str]:
-        """Flush the decoder and commit the tail of the utterance."""
+    def end_utterance(self, forced: bool = False) -> List[str]:
+        """Flush the decoder and commit the tail of the utterance.
+
+        ``forced`` marks a VAD/ASR segment-cap cut rather than a natural
+        endpoint: the speaker was still talking, so a number phrase left open
+        at this boundary must not be parsed as a complete value
+        (see :func:`shenava_realtime.fa_numbers.open_number_tail`).
+        """
         if not self._active:
             return []
         self._active = False
+        self._boundary_forced = forced
         deltas: List[str] = []
         started = time.perf_counter()
         try:
@@ -149,12 +166,15 @@ class TranscriptionPipeline:
             self._decodes += 1
             self._confidence = result.confidence or self._confidence
             if result.reset:
+                self._boundary_forced = True  # decoder cap: also a forced cut
                 deltas.extend(self._commit_everything())
+                self._boundary_forced = forced
             self._latest = result.text
             if self.commit_on_endpoint:
                 self.stabilizer.reset()
             self.stabilizer.update(result.text)
         deltas.extend(self._commit_everything())
+        self._boundary_forced = False
         return [delta for delta in deltas if delta]
 
     def abort(self) -> None:
@@ -163,6 +183,8 @@ class TranscriptionPipeline:
         self.stabilizer.reset()
         self._emitted = ""
         self._prefix = ""
+        self._boundary_forced = False
+        self._split_continues = False
         self._active = False
 
     # ------------------------------------------------------------------ #
@@ -171,7 +193,10 @@ class TranscriptionPipeline:
         if reset:
             # The decoder cut the window (long monologue): commit what we have,
             # then start a fresh accumulation whose text is appended below.
+            # This is a forced cut, not a natural phrase boundary.
+            self._boundary_forced = True
             deltas.extend(self._commit_everything())
+            self._boundary_forced = False
             self._prefix = _separated(self._emitted)
             self.stabilizer.reset()
         self._latest = hypothesis
@@ -191,8 +216,40 @@ class TranscriptionPipeline:
         return [delta] if delta else []
 
     def _emit(self) -> str:
-        """Post-process the committed text and return what has not been sent."""
-        processed = f"{self._prefix}{self.postprocessor.process(self.stabilizer.committed_text)}"
+        """Post-process the committed text and return what has not been sent.
+
+        A forced segment boundary must never complete a number phrase: the
+        open tail of the previous accumulation and the leading number words
+        of the next one are kept as spoken words (and flagged in the log)
+        instead of being parsed into independent — possibly wrong — values.
+        """
+        committed = self.stabilizer.committed_text
+        leading = ""
+        if self._split_continues:
+            self._split_continues = False
+            if committed:
+                leading = fa_numbers.leading_number_span(committed)
+        tail = (
+            fa_numbers.open_number_tail(committed)
+            if committed and self._boundary_forced
+            else ""
+        )
+        if tail:
+            self._split_continues = True
+        if leading or tail:
+            logger.warning(
+                "number phrase %r spans a forced segment boundary; "
+                "keeping the spoken words unparsed",
+                " ".join(part for part in (leading, tail) if part),
+            )
+        head = committed
+        if leading:
+            head = head[len(leading):].lstrip()
+        if tail:
+            head = head[: len(head) - len(tail)].rstrip()
+        processed_head = self.postprocessor.process(head) if head.strip() else ""
+        body = " ".join(part for part in (leading, processed_head, tail) if part)
+        processed = f"{self._prefix}{body}" if self._prefix else body
         if self._emitted and not processed.startswith(self._emitted):
             logger.warning("Suppressing a rewrite of already emitted text")
             return ""

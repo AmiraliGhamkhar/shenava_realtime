@@ -105,14 +105,20 @@ class FakeAudioCapture:
         return {"chunks": 0, "segments": 0, "vad_state": "silence"}
 
     # --- helpers used by tests -------------------------------------------
-    def emit_utterance(self, blocks: Sequence[np.ndarray], preroll_seconds: float = 0.0) -> None:
+    def emit_utterance(
+        self,
+        blocks: Sequence[np.ndarray],
+        preroll_seconds: float = 0.0,
+        forced: bool = False,
+    ) -> None:
         if self.on_speech_start is not None:
             self.on_speech_start(np.zeros(int(preroll_seconds * 16000), dtype=np.float32))
         for block in blocks:
             if self.on_audio is not None:
                 self.on_audio(block, True)
         if self.on_speech_end is not None:
-            self.on_speech_end(len(blocks) * len(blocks[0]) / 16000.0 if len(blocks) else 0.0)
+            duration = len(blocks) * len(blocks[0]) / 16000.0 if len(blocks) else 0.0
+            self.on_speech_end(duration, forced)
 
 
 class FakeBackend:

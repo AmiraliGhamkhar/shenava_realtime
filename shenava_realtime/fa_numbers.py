@@ -82,6 +82,7 @@ SCALES: Dict[str, int] = {
 
 CONNECTOR = "و"
 HALF = "نیم"
+DECIMAL_MARKER = "ممیز"
 
 _STARTERS: Set[str] = set(DIGITS) | set(TEENS) | set(TENS) | set(HUNDREDS) | set(SCALES)
 _VALUE_WORDS: Dict[str, int] = {**DIGITS, **TEENS, **TENS, **HUNDREDS}
@@ -168,6 +169,53 @@ def parse_number_phrase(
             return None
 
     return total + current, index
+
+
+def open_number_tail(text: str) -> str:
+    """Trailing *unfinished* number phrase of ``text`` ("" when complete).
+
+    A phrase is unfinished when its last token is the conjunction ``و`` or a
+    dangling decimal marker directly after number words: the grammar consumed
+    a value and was still waiting for the continuation when the tokens ran
+    out.  Used at forced VAD/ASR segment boundaries, where a phrase such as
+    ``سی و | پنج`` must not be parsed as two complete (wrong) values.
+    """
+    words = text.split()
+    end = len(words)
+    index = end
+    while index > 0:
+        key = match_key(words[index - 1])
+        if key in _VALUE_WORDS or key in SCALES or key in (CONNECTOR, DECIMAL_MARKER, HALF):
+            index -= 1
+            continue
+        break
+    span = words[index:end]
+    if len(span) < 2:
+        return ""
+    last = match_key(span[-1])
+    continued = last in (CONNECTOR, DECIMAL_MARKER)
+    has_value = any(
+        match_key(word) in _VALUE_WORDS or match_key(word) in SCALES for word in span[:-1]
+    )
+    return " ".join(span) if continued and has_value else ""
+
+
+def leading_number_span(text: str) -> str:
+    """Leading number-grammar run of ``text`` ("" when it starts elsewhere).
+
+    Used after a forced split: a segment beginning with number words may be
+    the continuation of the previous segment's unfinished phrase, so its
+    leading run must not be parsed as an independent value.
+    """
+    words = text.split()
+    index = 0
+    while index < len(words):
+        key = match_key(words[index])
+        if key in _VALUE_WORDS or key in SCALES or key in (CONNECTOR, DECIMAL_MARKER, HALF):
+            index += 1
+            continue
+        break
+    return " ".join(words[:index])
 
 
 def format_number(value: float, digits: str = "ascii") -> str:

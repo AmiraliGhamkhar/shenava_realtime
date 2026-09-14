@@ -135,11 +135,17 @@ class AudioConfig:
     # Bounded capture queue: oldest chunk is dropped when the consumer stalls
     queue_max_chunks: int = 32
 
+    # Heartbeat: the mic callback pushes blocks continuously, so a gap this
+    # long means the input device went silent/disconnected (not merely quiet).
+    dropout_timeout_s: float = 2.0
+
     def __post_init__(self) -> None:
         if self.sample_rate != 16000 or self.channels != 1:
             raise ValueError("Shenava requires 16000 Hz mono audio")
         if not 1 <= self.chunk_size <= 16000 or not 1 <= self.queue_max_chunks <= 1024:
             raise ValueError("Invalid audio block/queue size")
+        if not 0 < self.dropout_timeout_s <= 60:
+            raise ValueError("dropout_timeout_s must be within (0, 60] seconds")
         from .vad import VADConfig
         VADConfig(sample_rate=self.sample_rate, onset_rms=self.vad_onset_rms,
                   offset_rms=self.vad_offset_rms, min_speech_ms=self.vad_min_speech_ms,
