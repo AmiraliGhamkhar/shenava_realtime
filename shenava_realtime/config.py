@@ -1,11 +1,29 @@
-"""Small, typed configuration for the Shenava application."""
+"""Typed configuration for the Shenava real-time ASR app.
 
-from dataclasses import asdict, dataclass, field
-from enum import Enum
+All runtime knobs live here as small dataclasses.  A handful of them can be
+overridden with environment variables (optionally read from a local ``.env``
+file) so the app can be retargeted without editing code:
+
+``SHENAVA_MODEL_PATH``, ``SHENAVA_MODEL_NAME``, ``SHENAVA_DEVICE``,
+``SHENAVA_DECODER``, ``SHENAVA_NUM_THREADS``, ``SHENAVA_OUTPUT_MODE``,
+``SHENAVA_INJECTOR_MODE``, ``SHENAVA_AUDIO_DEVICE``, ``SHENAVA_LOG_LEVEL``.
+"""
+
+from __future__ import annotations
+
 import json
+import logging
 import os
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.0.nemo"
+DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.0"
 
 
 class OutputMode(str, Enum):
@@ -14,6 +32,12 @@ class OutputMode(str, Enum):
     BOTH = "both"
     CLIPBOARD = "clipboard"
     CONSOLE = "console"
+
+
+class InjectorMode(str, Enum):
+    AUTO = "auto"
+    CLIPBOARD = "clipboard"
+    KEYBOARD = "keyboard"
 
 
 class OverlayPosition(str, Enum):
@@ -27,47 +51,131 @@ class OverlayPosition(str, Enum):
     CUSTOM = "custom"
 
 
-class InjectorMode(str, Enum):
-    KEYBOARD_SIMULATION = "keyboard"
-    CLIPBOARD_PASTE = "clipboard"
-    DIRECT_INPUT = "direct"
+class DigitStyle(str, Enum):
+    ASCII = "ascii"
+    PERSIAN = "persian"
 
 
+# --------------------------------------------------------------------------- #
+# .env handling (tiny loader; avoids a python-dotenv dependency)
+# --------------------------------------------------------------------------- #
+def load_dotenv(path: Optional[Path] = None) -> None:
+    """Populate ``os.environ`` from a ``.env`` file without overriding exports."""
+    env_path = Path(path) if path else REPO_ROOT / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", env_path, exc)
+
+
+def _env(name: str) -> Optional[str]:
+    value = os.getenv(name)
+    return value if value not in (None, "") else None
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Ignoring %s=%r (not a number)", name, raw)
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring %s=%r (not an integer)", name, raw)
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = _env(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# --------------------------------------------------------------------------- #
+# Sections
+# --------------------------------------------------------------------------- #
 @dataclass
 class AudioConfig:
+    """16 kHz mono capture + RMS VAD tuning."""
+
     sample_rate: int = 16000
     channels: int = 1
-    chunk_size: int = 1024
-    buffer_duration: float = 1.0
-    overlap_duration: float = 0.2
-    vad_threshold: float = 0.02
-    vad_min_speech: float = 0.5
-    vad_min_silence: float = 0.8
-    noise_gate_threshold: float = 0.01
-    apply_noise_reduction: bool = True
-    max_buffer_duration: float = 15.0
-    partial_buffer_duration: float = 0.5
+    chunk_size: int = 1024  # 64 ms at 16 kHz
+    device: Optional[Any] = None  # sounddevice input device index/name
+
+    # Voice activity detection (hysteresis: onset > offset)
+    vad_onset_rms: float = 0.015
+    vad_offset_rms: float = 0.008
+    vad_min_speech_ms: int = 250
+    vad_min_silence_ms: int = 700
+    vad_pre_speech_ms: int = 320
+    vad_max_speech_s: float = 20.0
+
+    # Bounded capture queue: oldest chunk is dropped when the consumer stalls
+    queue_max_chunks: int = 96
+
+    @property
+    def chunk_duration(self) -> float:
+        return self.chunk_size / float(self.sample_rate)
 
 
 @dataclass
 class ASRConfig:
-    model_name: str = "Reza2kn/Shenava-Koochik-v1.0"
-    # Prefer SHENAVA_MODEL_PATH if set; otherwise fall back to the bundled
-    # .nemo checkpoint shipped under this project's shenava-koochik/ folder.
+    """Shenava (NeMo FastConformer hybrid) CTC decoding + streaming window."""
+
+    model_name: str = DEFAULT_MODEL_NAME
     model_path: Optional[str] = field(
-        default_factory=lambda: os.getenv("SHENAVA_MODEL_PATH")
-        or str(Path(__file__).resolve().parent.parent / "shenava-koochik" / "shenava-koochik-v1.0.nemo")
+        default_factory=lambda: _env("SHENAVA_MODEL_PATH") or str(DEFAULT_MODEL_FILE)
     )
-    device: str = "cuda"
-    context_size: list[int] = field(default_factory=lambda: [70, 13])
-    streaming_chunk_duration: float = 1.0
-    streaming_overlap: float = 0.1
-    max_buffer_duration: float = 30.0
-    apply_itn: bool = True
-    remove_repetitions: bool = True
-    confidence_threshold: float = 0.5
-    num_threads: int = 4
+    device: str = "auto"  # "auto" | "cpu" | "cuda" | "cuda:1"
     decoder_type: str = "ctc"
+    num_threads: int = 4
+    confidence_threshold: float = 0.0
+
+    # Streaming: how often to re-decode and how much audio each decode sees.
+    partial_interval_s: float = 0.5
+    left_context_s: float = 2.0
+    max_window_s: float = 10.0
+    use_cache_aware_streaming: bool = True
+
+    # Transcript stabilization: words kept un-committed until they stop moving.
+    holdback_words: int = 2
+
+
+@dataclass
+class PostProcessConfig:
+    """Deterministic FST/rule post-processing switches."""
+
+    enabled: bool = True
+    normalize_unicode: bool = True
+    remove_repetitions: bool = True
+    convert_numbers: bool = True
+    digits: DigitStyle = DigitStyle.ASCII
+    medical_terms: bool = True
+    units: bool = True
+    punctuation: bool = True
+    join_persian_affixes: bool = True
 
 
 @dataclass
@@ -75,40 +183,31 @@ class OverlayConfig:
     enabled: bool = True
     position: OverlayPosition = OverlayPosition.BOTTOM
     custom_position: Tuple[int, int] = (100, 100)
-    width: int = 600
-    height: int = 80
-    opacity: float = 0.9
+    width: int = 620
+    height: int = 90
+    opacity: float = 0.92
     always_on_top: bool = True
-    click_through: bool = False
-    borderless: bool = True
     font_family: str = "Vazirmatn"
     font_size: int = 16
     text_color: str = "#FFFFFF"
     background_color: str = "#1E1E1E"
     border_color: str = "#4A9EFF"
-    border_width: int = 2
-    fade_duration: int = 200
-    max_lines: int = 2
-    scroll_speed: int = 50
+    max_chars: int = 200
     show_confidence: bool = False
     show_partial: bool = True
-    auto_hide_delay: float = 3.0
+    auto_hide_delay: float = 4.0
 
 
 @dataclass
 class InjectorConfig:
     enabled: bool = True
-    mode: InjectorMode = InjectorMode.KEYBOARD_SIMULATION
-    delay_between_keys: float = 0.01
-    delay_between_words: float = 0.05
-    inject_on_complete: bool = True
-    inject_partial: bool = False
-    target_window: Optional[str] = None
-    target_process: Optional[str] = None
-    layout: str = "persian"
-    use_unicode: bool = True
+    mode: InjectorMode = InjectorMode.AUTO
+    delay_between_keys: float = 0.0
+    delay_after_paste_s: float = 0.05
+    restore_clipboard: bool = True
+    send_space_after: bool = False
     send_enter_after: bool = False
-    send_space_after: bool = True
+    skip_consecutive_duplicates: bool = True
 
 
 @dataclass
@@ -118,25 +217,94 @@ class HotkeyConfig:
     toggle_injector: str = "ctrl+alt+i"
     clear_transcript: str = "ctrl+alt+c"
     emergency_stop: str = "ctrl+alt+q"
-    cycle_output_mode: str = "ctrl+alt+m"
-    cycle_injector_mode: str = "ctrl+alt+n"
 
 
 @dataclass
 class AppConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
+    postprocess: PostProcessConfig = field(default_factory=PostProcessConfig)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     injector: InjectorConfig = field(default_factory=InjectorConfig)
     hotkeys: HotkeyConfig = field(default_factory=HotkeyConfig)
     output_mode: OutputMode = OutputMode.BOTH
     debug: bool = False
-    log_file: str = "shenava_realtime.log"
+    log_level: str = "INFO"
     save_transcripts: bool = True
     transcripts_dir: str = "transcripts"
-    is_recording: bool = False
-    overlay_visible: bool = True
-    injector_active: bool = True
+
+    @classmethod
+    def from_env(cls, config_path: Optional[Path] = None) -> "AppConfig":
+        """Build a config from defaults, an optional JSON file, then env vars."""
+        load_dotenv()
+        config = ConfigManager.load(config_path) if config_path else cls()
+        apply_env_overrides(config)
+        return config
+
+
+def apply_env_overrides(config: AppConfig) -> AppConfig:
+    """Apply the documented ``SHENAVA_*`` environment overrides in place."""
+    model_path = _env("SHENAVA_MODEL_PATH")
+    if model_path:
+        config.asr.model_path = model_path
+    model_name = _env("SHENAVA_MODEL_NAME")
+    if model_name:
+        config.asr.model_name = model_name
+    device = _env("SHENAVA_DEVICE")
+    if device:
+        config.asr.device = device
+    decoder = _env("SHENAVA_DECODER")
+    if decoder:
+        config.asr.decoder_type = decoder
+    config.asr.num_threads = _env_int("SHENAVA_NUM_THREADS", config.asr.num_threads)
+    config.asr.partial_interval_s = _env_float(
+        "SHENAVA_PARTIAL_INTERVAL_S", config.asr.partial_interval_s
+    )
+    config.audio.device = _env("SHENAVA_AUDIO_DEVICE") or config.audio.device
+
+    output_mode = _env("SHENAVA_OUTPUT_MODE")
+    if output_mode:
+        try:
+            config.output_mode = OutputMode(output_mode.lower())
+        except ValueError:
+            logger.warning(
+                "Ignoring SHENAVA_OUTPUT_MODE=%r (expected one of %s)",
+                output_mode,
+                ", ".join(mode.value for mode in OutputMode),
+            )
+
+    injector_mode = _env("SHENAVA_INJECTOR_MODE")
+    if injector_mode:
+        try:
+            config.injector.mode = InjectorMode(injector_mode.lower())
+        except ValueError:
+            logger.warning(
+                "Ignoring SHENAVA_INJECTOR_MODE=%r (expected one of %s)",
+                injector_mode,
+                ", ".join(mode.value for mode in InjectorMode),
+            )
+
+    log_level = _env("SHENAVA_LOG_LEVEL")
+    if log_level:
+        config.log_level = log_level
+    if _env_bool("SHENAVA_DEBUG", config.debug):
+        config.debug = True
+    return config
+
+
+# --------------------------------------------------------------------------- #
+# JSON persistence
+# --------------------------------------------------------------------------- #
+_ENUM_SECTIONS = {
+    "overlay": ("position", OverlayPosition),
+    "injector": ("mode", InjectorMode),
+}
+
+
+def _decode_enum(value: Any, enum_cls: type) -> Any:
+    if isinstance(value, enum_cls):
+        return value
+    return enum_cls(value)
 
 
 class ConfigManager:
@@ -144,36 +312,64 @@ class ConfigManager:
 
     @staticmethod
     def load(config_path: Optional[Path] = None) -> AppConfig:
-        if not config_path or not config_path.exists():
+        if not config_path:
             return AppConfig()
-        with config_path.open(encoding="utf-8") as file:
-            data = json.load(file)
+        config_path = Path(config_path)
+        if not config_path.exists():
+            logger.warning("Config file %s not found; using defaults", config_path)
+            return AppConfig()
+
+        with config_path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
         if not isinstance(data, dict):
             raise ValueError("Configuration root must be a JSON object")
 
-        def section(cls, name: str):
+        mapping = {
+            "audio": AudioConfig,
+            "asr": ASRConfig,
+            "postprocess": PostProcessConfig,
+            "overlay": OverlayConfig,
+            "injector": InjectorConfig,
+            "hotkeys": HotkeyConfig,
+        }
+        kwargs: Dict[str, Any] = {}
+        for name, cls in mapping.items():
             values = data.get(name, {})
             if not isinstance(values, dict):
                 raise ValueError(f"Configuration section '{name}' must be an object")
-            if name == "position" or name == "mode":
-                return values
-            if name == "overlay":
-                values["position"] = OverlayPosition(values.get("position", OverlayPosition.BOTTOM))
-            if name == "injector":
-                values["mode"] = InjectorMode(values.get("mode", InjectorMode.KEYBOARD_SIMULATION))
-            return cls(**values)
+            known = {f.name for f in fields(cls)}
+            unknown = set(values) - known
+            if unknown:
+                logger.warning("Ignoring unknown %s keys: %s", name, ", ".join(sorted(unknown)))
+                values = {key: value for key, value in values.items() if key in known}
+            if name in _ENUM_SECTIONS:
+                key, enum_cls = _ENUM_SECTIONS[name]
+                if key in values:
+                    values[key] = _decode_enum(values[key], enum_cls)
+            if name == "postprocess" and "digits" in values:
+                values["digits"] = _decode_enum(values["digits"], DigitStyle)
+            kwargs[name] = cls(**values)
 
-        return AppConfig(
-            audio=section(AudioConfig, "audio"),
-            asr=section(ASRConfig, "asr"),
-            overlay=section(OverlayConfig, "overlay"),
-            injector=section(InjectorConfig, "injector"),
-            hotkeys=section(HotkeyConfig, "hotkeys"),
-            output_mode=OutputMode(data.get("output_mode", OutputMode.BOTH)),
-            **{key: data[key] for key in ("debug", "log_file", "save_transcripts", "transcripts_dir", "is_recording", "overlay_visible", "injector_active") if key in data},
-        )
+        if "output_mode" in data:
+            kwargs["output_mode"] = _decode_enum(data["output_mode"], OutputMode)
+        for key in ("debug", "log_level", "save_transcripts", "transcripts_dir"):
+            if key in data:
+                kwargs[key] = data[key]
+        return AppConfig(**kwargs)
 
     @staticmethod
-    def save(config: AppConfig, config_path: Path):
+    def save(config: AppConfig, config_path: Path) -> None:
+        config_path = Path(config_path)
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(asdict(config), indent=2, ensure_ascii=False, default=lambda value: value.value if isinstance(value, Enum) else str(value)), encoding="utf-8")
+
+        def default(value: Any) -> Any:
+            if isinstance(value, Enum):
+                return value.value
+            if is_dataclass(value):
+                return asdict(value)
+            return str(value)
+
+        config_path.write_text(
+            json.dumps(asdict(config), indent=2, ensure_ascii=False, default=default),
+            encoding="utf-8",
+        )

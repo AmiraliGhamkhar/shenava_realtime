@@ -1,516 +1,302 @@
-"""
-Overlay window for real-time transcription display
-Creates a floating, always-on-top window with transcription text
+"""Floating overlay that shows the live transcript.
+
+Tkinter is single threaded, so every mutation coming from the ASR/injector
+threads is pushed onto ``ui_queue`` and drained by a periodic ``after`` callback
+on the Tk thread.  The window is created *and* destroyed on that same thread,
+which is what makes start/stop reliable (calling ``destroy()`` from another
+thread is undefined behaviour in Tk).
 """
 
-import tkinter as tk
-from tkinter import font as tkfont
-import threading
+from __future__ import annotations
+
+import logging
 import queue
+import threading
 import time
-from typing import Optional, Callable
-from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from ..config import OverlayConfig, OverlayPosition
 
+logger = logging.getLogger(__name__)
+
+FALLBACK_FONTS = ("Vazirmatn", "Segoe UI", "Tahoma", "Arial", "Helvetica")
+_STATUS_COLOR_ACTIVE = "#4CAF50"
+_STATUS_COLOR_IDLE = "#888888"
+_STATUS_COLOR_RECORDING = "#4A9EFF"
+
 
 class OverlayWindow:
-    """
-    Floating overlay window for transcription display
-    
-    Features:
-    - Always on top
-    - Semi-transparent
-    - Customizable position and appearance
-    - Smooth text updates
-    - Auto-hide on silence
-    - Click-through mode (optional)
-    """
-    
-    def __init__(self, config: OverlayConfig, ui_queue: Optional[queue.Queue] = None):
-        """
-        Initialize overlay window
-        
-        Args:
-            config: Overlay configuration
-            ui_queue: Optional queue of (method_name, args) tuples drained by
-                      the tkinter thread (used for thread-safe cross-thread updates)
-        """
+    """The Tk window itself. Only ever touched from the Tk thread."""
+
+    def __init__(self, config: OverlayConfig, ui_queue: "queue.Queue[Tuple[str, tuple]]") -> None:
+        import tkinter as tk
+        from tkinter import font as tkfont
+
+        self._tk = tk
         self.config = config
-        self.is_visible = False
-        self.is_running = False
         self.ui_queue = ui_queue
-        
-        # Create tkinter window
-        self.root = None
-        self.text_label = None
-        self.confidence_label = None
-        
-        # Update thread
-        self.update_thread: Optional[threading.Thread] = None
-        self.update_queue = []
-        
-        # Auto-hide timer
+        self.is_visible = False
         self.last_text_time = 0.0
-        self.auto_hide_timer = None
-        
-        # Initialize window
-        self._create_window()
-    
-    def _create_window(self):
-        """Create the overlay window"""
-        # Create root window in separate thread
+        self._auto_hide_id: Optional[str] = None
+        self._drag_offset: Tuple[int, int] = (0, 0)
+
         self.root = tk.Tk()
-        self.root.title("Shenava ASR Overlay")
-        
-        # Configure window
-        self._configure_window()
-        
-        # Create widgets
-        self._create_widgets()
-        
-        # Position window
-        self._position_window()
-        
-        # Bind events
-        self._bind_events()
-        
-        # Mark visible: the Tk window is shown on creation, so keep the
-        # flag in sync (otherwise update_text/update_partial drop everything)
-        self.show()
-    
-    def _configure_window(self):
-        """Configure window properties"""
-        # Always on top
-        if self.config.always_on_top:
-            self.root.attributes('-topmost', True)
-        
-        # Transparency
-        self.root.attributes('-alpha', self.config.opacity)
-        
-        # Remove window decorations
-        if self.config.borderless:
-            self.root.overrideredirect(True)
-        
-        # Set size
-        self.root.geometry(f"{self.config.width}x{self.config.height}")
-        
-        # Set background color
-        self.root.configure(bg=self.config.background_color)
-        
-        # Try to make click-through (Windows only)
-        if self.config.click_through and hasattr(self.root, 'attributes'):
-            try:
-                # This is Windows-specific
-                self.root.attributes('-transparentcolor', self.config.background_color)
-            except:
-                pass
-    
-    def _create_widgets(self):
-        """Create overlay widgets"""
-        # Main frame
-        self.main_frame = tk.Frame(
-            self.root,
-            bg=self.config.background_color,
-            padx=10,
-            pady=5
-        )
-        self.main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Try to load Persian font
-        font_family = self.config.font_family
+        self.root.title("Shenava ASR")
+        self.root.configure(bg=config.background_color)
+        if config.always_on_top:
+            self.root.attributes("-topmost", True)
         try:
-            # Check if font exists
-            available_fonts = tkfont.families()
-            if font_family not in available_fonts:
-                # Fallback fonts
-                for fallback in ['Segoe UI', 'Arial', 'Helvetica']:
-                    if fallback in available_fonts:
-                        font_family = fallback
-                        break
-                else:
-                    font_family = 'TkDefaultFont'
-        except:
-            font_family = 'TkDefaultFont'
-        
-        # Text label
-        self.text_label = tk.Label(
-            self.main_frame,
-            text="",
-            font=(font_family, self.config.font_size),
-            fg=self.config.text_color,
-            bg=self.config.background_color,
-            wraplength=self.config.width - 20,
-            justify=tk.CENTER,
-            anchor=tk.CENTER
+            self.root.attributes("-alpha", float(config.opacity))
+        except Exception:
+            logger.warning("window transparency is not supported here")
+        self.root.overrideredirect(True)
+        self.root.geometry(self._geometry_for(config.position))
+
+        self._font_family = self._pick_font(tkfont)
+        self._text_var = tk.StringVar(value="")
+        self.label = tk.Label(
+            self.root,
+            textvariable=self._text_var,
+            font=(self._font_family, config.font_size),
+            fg=config.text_color,
+            bg=config.background_color,
+            wraplength=max(80, config.width - 24),
+            justify="center",
+            anchor="center",
         )
-        self.text_label.pack(fill=tk.BOTH, expand=True)
-        
-        # Confidence label (optional)
-        if self.config.show_confidence:
-            self.confidence_label = tk.Label(
-                self.main_frame,
-                text="",
-                font=(font_family, 10),
-                fg='#888888',
-                bg=self.config.background_color,
-                anchor=tk.S
-            )
-            self.confidence_label.pack(fill=tk.X)
-        
-        # Status indicator
-        self.status_label = tk.Label(
-            self.main_frame,
+        self.label.pack(fill="both", expand=True, padx=12, pady=6)
+
+        self.status = tk.Label(
+            self.root,
             text="●",
-            font=(font_family, 8),
-            fg='#4A9EFF',
-            bg=self.config.background_color,
-            anchor=tk.E
+            font=(self._font_family, 9),
+            fg=_STATUS_COLOR_RECORDING,
+            bg=config.background_color,
         )
-        self.status_label.place(relx=1.0, rely=0.0, anchor=tk.NE)
-    
-    def _position_window(self):
-        """Position the overlay window"""
-        # Get screen dimensions
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        
-        # Calculate position based on config
-        if self.config.position == OverlayPosition.TOP:
-            x = (screen_width - self.config.width) // 2
-            y = 50
-        
-        elif self.config.position == OverlayPosition.BOTTOM:
-            x = (screen_width - self.config.width) // 2
-            y = screen_height - self.config.height - 100
-        
-        elif self.config.position == OverlayPosition.TOP_LEFT:
-            x = 20
-            y = 50
-        
-        elif self.config.position == OverlayPosition.TOP_RIGHT:
-            x = screen_width - self.config.width - 20
-            y = 50
-        
-        elif self.config.position == OverlayPosition.BOTTOM_LEFT:
-            x = 20
-            y = screen_height - self.config.height - 100
-        
-        elif self.config.position == OverlayPosition.BOTTOM_RIGHT:
-            x = screen_width - self.config.width - 20
-            y = screen_height - self.config.height - 100
-        
-        elif self.config.position == OverlayPosition.CENTER:
-            x = (screen_width - self.config.width) // 2
-            y = (screen_height - self.config.height) // 2
-        
-        elif self.config.position == OverlayPosition.CUSTOM:
-            x, y = self.config.custom_position
-        
-        else:
-            # Default: bottom center
-            x = (screen_width - self.config.width) // 2
-            y = screen_height - self.config.height - 100
-        
-        # Set position
-        self.root.geometry(f"{self.config.width}x{self.config.height}+{x}+{y}")
-    
-    def _bind_events(self):
-        """Bind window events"""
-        # Make window draggable
-        self.root.bind('<Button-1>', self._on_click)
-        self.root.bind('<B1-Motion>', self._on_drag)
-        
-        # Close on Escape
-        self.root.bind('<Escape>', lambda e: self.hide())
-        
-        # Update loop
-        self.root.after(50, self._update_loop)
-    
-    def _on_click(self, event):
-        """Handle click event for dragging"""
-        self._drag_start_x = event.x
-        self._drag_start_y = event.y
-    
-    def _on_drag(self, event):
-        """Handle drag event"""
-        x = self.root.winfo_x() + (event.x - self._drag_start_x)
-        y = self.root.winfo_y() + (event.y - self._drag_start_y)
-        self.root.geometry(f"+{x}+{y}")
-    
-    def show(self):
-        """Show overlay window"""
-        if not self.is_visible:
-            self.is_visible = True
-            self.root.deiconify()
-            self.root.lift()
-            
-            # Restart auto-hide timer
-            self._reset_auto_hide()
-    
-    def hide(self):
-        """Hide overlay window"""
+        self.status.place(relx=1.0, rely=0.0, anchor="ne", x=-6, y=2)
+
+        self.root.bind("<Button-1>", self._on_press)
+        self.root.bind("<B1-Motion>", self._on_drag)
+        self.root.bind("<Escape>", lambda _event: self.hide())
+
+        self.show()
+        self.root.after(50, self._pump)
+
+    # ------------------------------------------------------------------ #
+    def _pick_font(self, tkfont) -> str:
+        try:
+            available = set(tkfont.families())
+        except Exception:
+            logger.debug("could not enumerate fonts")
+            return FALLBACK_FONTS[-1]
+        for family in (self.config.font_family, *FALLBACK_FONTS):
+            if family in available:
+                return family
+        return "TkDefaultFont"
+
+    def _geometry_for(self, position: OverlayPosition) -> str:
+        width, height = self.config.width, self.config.height
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        margin = 24
+        bottom_y = screen_h - height - 90
+        positions: Dict[OverlayPosition, Tuple[int, int]] = {
+            OverlayPosition.TOP: ((screen_w - width) // 2, 50),
+            OverlayPosition.BOTTOM: ((screen_w - width) // 2, bottom_y),
+            OverlayPosition.TOP_LEFT: (margin, 50),
+            OverlayPosition.TOP_RIGHT: (screen_w - width - margin, 50),
+            OverlayPosition.BOTTOM_LEFT: (margin, bottom_y),
+            OverlayPosition.BOTTOM_RIGHT: (screen_w - width - margin, bottom_y),
+            OverlayPosition.CENTER: ((screen_w - width) // 2, (screen_h - height) // 2),
+            OverlayPosition.CUSTOM: tuple(self.config.custom_position),  # type: ignore[assignment]
+        }
+        x, y = positions.get(position, positions[OverlayPosition.BOTTOM])
+        return f"{width}x{height}+{max(0, int(x))}+{max(0, int(y))}"
+
+    # ------------------------------------------------------------------ #
+    def show(self) -> None:
         if self.is_visible:
-            self.is_visible = False
-            self.root.withdraw()
-    
-    def toggle(self):
-        """Toggle overlay visibility"""
-        if self.is_visible:
-            self.hide()
-        else:
-            self.show()
-    
-    def update_text(self, text: str, confidence: float = 0.0):
-        """
-        Update overlay text
-        
-        Args:
-            text: Transcription text
-            confidence: Confidence score
-        """
-        # Re-show on new speech if auto-hidden
-        if not self.is_visible:
-            self.show()
-        
-        # Truncate text if too long
-        if len(text) > 200:
-            text = "..." + text[-200:]
-        
-        # Update text
-        self.text_label.config(text=text)
-        self.last_text_time = time.time()
-        
-        # Update confidence
-        if self.confidence_label and confidence > 0:
-            conf_text = f"Confidence: {confidence:.1%}"
-            self.confidence_label.config(text=conf_text)
-            
-            # Color based on confidence
-            if confidence > 0.8:
-                color = '#4CAF50'  # Green
-            elif confidence > 0.5:
-                color = '#FFC107'  # Yellow
-            else:
-                color = '#F44336'  # Red
-            
-            self.confidence_label.config(fg=color)
-        
-        # Update status indicator
-        if confidence > 0:
-            self.status_label.config(fg='#4CAF50')  # Green when active
-        else:
-            self.status_label.config(fg='#888888')  # Gray when idle
-        
-        # Reset auto-hide timer
-        self._reset_auto_hide()
-    
-    def update_partial(self, text: str):
-        """
-        Update with partial transcription
-        
-        Args:
-            text: Partial transcription text
-        """
-        if not self.config.show_partial:
             return
-        
-        # Add ellipsis for partial results
-        display_text = text + "..."
-        self.text_label.config(text=display_text)
-        self.last_text_time = time.time()
-    
-    def set_recording_status(self, is_recording: bool):
-        """
-        Set recording status indicator
-        
-        Args:
-            is_recording: Whether currently recording
-        """
-        if is_recording:
-            self.status_label.config(fg='#4A9EFF', text='●')
-        else:
-            self.status_label.config(fg='#888888', text='○')
-    
-    def _reset_auto_hide(self):
-        """Reset auto-hide timer"""
-        if self.auto_hide_timer:
-            self.root.after_cancel(self.auto_hide_timer)
-        
-        if self.config.auto_hide_delay > 0:
-            self.auto_hide_timer = self.root.after(
-                int(self.config.auto_hide_delay * 1000),
-                self._auto_hide
-            )
-    
-    def _auto_hide(self):
-        """Auto-hide overlay"""
-        if self.is_visible:
-            # Fade out effect would go here
-            self.hide()
-    
-    def _update_loop(self):
-        """Main update loop (runs on the tkinter thread)"""
-        # Drain cross-thread update queue
-        if self.ui_queue is not None:
+        self.is_visible = True
+        self.root.deiconify()
+        self.root.lift()
+        self._schedule_auto_hide()
+
+    def hide(self) -> None:
+        if not self.is_visible:
+            return
+        self.is_visible = False
+        if self._auto_hide_id is not None:
             try:
-                while True:
-                    method_name, args = self.ui_queue.get_nowait()
-                    fn = getattr(self, method_name, None)
-                    if callable(fn):
-                        fn(*args)
-            except queue.Empty:
-                pass
-        
-        # Check for auto-hide
-        if self.is_visible and self.last_text_time > 0:
-            if time.time() - self.last_text_time > self.config.auto_hide_delay:
-                self.last_text_time = 0.0  # Only hide once per idle period
-                self._auto_hide()
-        
-        # Schedule next update
-        self.root.after(50, self._update_loop)
-    
-    def run(self):
-        """Run the overlay window main loop"""
-        self.is_running = True
+                self.root.after_cancel(self._auto_hide_id)
+            except Exception:
+                logger.debug("could not cancel the auto-hide timer")
+            self._auto_hide_id = None
+        self.root.withdraw()
+
+    def toggle(self) -> None:
+        self.hide() if self.is_visible else self.show()
+
+    def update_text(self, text: str, confidence: float = 0.0) -> None:
+        limit = max(40, self.config.max_chars)
+        if len(text) > limit:
+            text = "…" + text[-limit:]
+        self._text_var.set(text)
+        self.last_text_time = time.time()
+        self.status.config(fg=_STATUS_COLOR_ACTIVE if confidence > 0 else _STATUS_COLOR_IDLE)
+        if self.config.show_confidence and confidence > 0:
+            self.root.title(f"Shenava ASR — {confidence:.0%}")
+        self._schedule_auto_hide()
+        if not self.is_visible:
+            self.show()
+
+    def update_partial(self, text: str) -> None:
+        if not self.config.show_partial or not text:
+            return
+        self.update_text(text, 0.0)
+
+    def set_recording_status(self, is_recording: bool) -> None:
+        self.status.config(
+            text="●" if is_recording else "○",
+            fg=_STATUS_COLOR_RECORDING if is_recording else _STATUS_COLOR_IDLE,
+        )
+
+    def set_position(self, x: int, y: int) -> None:
+        self.root.geometry(f"+{int(x)}+{int(y)}")
+
+    # ------------------------------------------------------------------ #
+    def _on_press(self, event) -> None:
+        self._drag_offset = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
+
+    def _on_drag(self, event) -> None:
+        self.root.geometry(f"+{event.x_root - self._drag_offset[0]}+{event.y_root - self._drag_offset[1]}")
+
+    def _schedule_auto_hide(self) -> None:
+        if self.config.auto_hide_delay <= 0:
+            return
+        if self._auto_hide_id is not None:
+            try:
+                self.root.after_cancel(self._auto_hide_id)
+            except Exception:
+                logger.debug("could not cancel the auto-hide timer")
+        self._auto_hide_id = self.root.after(int(self.config.auto_hide_delay * 1000), self.hide)
+
+    def _pump(self) -> None:
+        """Drain cross-thread updates and reschedule (runs on the Tk thread)."""
+        try:
+            while True:
+                method, args = self.ui_queue.get_nowait()
+                target: Optional[Callable[..., Any]] = getattr(self, method, None)
+                if callable(target):
+                    try:
+                        target(*args)
+                    except Exception:
+                        logger.exception("overlay update %s failed", method)
+                else:
+                    logger.warning("unknown overlay command %r", method)
+        except queue.Empty:
+            pass
+        self.root.after(50, self._pump)
+
+    # ------------------------------------------------------------------ #
+    def run(self) -> None:
         self.root.mainloop()
-    
-    def stop(self):
-        """Stop the overlay window"""
-        self.is_running = False
-        if self.root:
+
+    def shutdown(self) -> None:
+        try:
             self.root.quit()
             self.root.destroy()
-    
-    def set_position(self, x: int, y: int):
-        """
-        Set custom position
-        
-        Args:
-            x: X coordinate
-            y: Y coordinate
-        """
-        self.root.geometry(f"+{x}+{y}")
-    
-    def set_size(self, width: int, height: int):
-        """
-        Set window size
-        
-        Args:
-            width: Window width
-            height: Window height
-        """
-        self.root.geometry(f"{width}x{height}")
+        except Exception:
+            logger.exception("error while destroying the overlay window")
+        finally:
+            self.is_visible = False
 
 
 class OverlayManager:
-    """
-    Manages overlay window lifecycle and updates
-    """
-    
-    def __init__(self, config: OverlayConfig):
-        """
-        Initialize overlay manager
-        
-        Args:
-            config: Overlay configuration
-        """
-        self.config = config
-        self.overlay: Optional[OverlayWindow] = None
-        self.overlay_thread: Optional[threading.Thread] = None
-        self.is_running = False
-        
-        # Cross-thread UI updates are queued and drained on the tkinter thread
-        self.ui_queue: queue.Queue = queue.Queue()
-        self._last_recording_status: Optional[bool] = None
-    
-    def start(self):
-        """Start overlay in separate thread"""
+    """Owns the overlay thread and offers thread-safe update methods."""
+
+    def __init__(self, config: Optional[OverlayConfig] = None) -> None:
+        self.config = config or OverlayConfig()
+        self.ui_queue: "queue.Queue[Tuple[str, tuple]]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._window: Optional[OverlayWindow] = None
+        self._ready = threading.Event()
+        self._failed = False
+        self._last_recording: Optional[bool] = None
+
+    # ------------------------------------------------------------------ #
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self, wait_s: float = 2.0) -> bool:
         if self.is_running:
-            return
-        
-        print("🖥️  Starting overlay window...")
-        
-        self.is_running = True
-        
-        # Create and run overlay in separate thread
-        self.overlay_thread = threading.Thread(target=self._run_overlay)
-        self.overlay_thread.daemon = True
-        self.overlay_thread.start()
-        
-        # Wait for overlay to initialize
-        time.sleep(0.5)
-        
-        print("✅ Overlay window started")
-    
-    def _run_overlay(self):
-        """Run overlay window"""
+            return True
+        self._ready.clear()
+        self._failed = False
+        self._thread = threading.Thread(target=self._run, name="overlay", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout=wait_s):
+            logger.warning("overlay window did not come up within %.1fs", wait_s)
+            return False
+        if self._failed:
+            return False
+        logger.info("overlay window started")
+        return True
+
+    def _run(self) -> None:
         try:
-            self.overlay = OverlayWindow(self.config, ui_queue=self.ui_queue)
-            self.overlay.run()
-        except Exception as e:
-            print(f"❌ Overlay error: {e}")
+            window = OverlayWindow(self.config, self.ui_queue)
+        except Exception:
+            self._failed = True
+            self._ready.set()
+            logger.exception("could not create the overlay window (is a display available?)")
+            return
+        self._window = window
+        self._ready.set()
+        try:
+            window.run()
+        except Exception:
+            logger.exception("overlay main loop crashed")
         finally:
-            self.is_running = False
-    
-    def stop(self):
-        """Stop overlay"""
-        if not self.is_running:
+            self._window = None
+
+    def stop(self) -> None:
+        thread = self._thread
+        window = self._window
+        self._thread = None
+        self._window = None
+        if window is not None:
+            # Destroy on the Tk thread: quit() wakes the mainloop, which returns
+            # and lets _run() finish on its own thread.
+            self.ui_queue.put(("shutdown", ()))
+        if thread is not None:
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                logger.warning("overlay thread did not exit within 3s")
+            logger.info("overlay window stopped")
+
+    # ------------------------------------------------------------------ #
+    def _post(self, method: str, *args: Any) -> None:
+        self.ui_queue.put((method, args))
+
+    def update_text(self, text: str, confidence: float = 0.0) -> None:
+        self._post("update_text", text, confidence)
+
+    def update_partial(self, text: str) -> None:
+        self._post("update_partial", text)
+
+    def show(self) -> None:
+        self._post("show")
+
+    def hide(self) -> None:
+        self._post("hide")
+
+    def toggle(self) -> None:
+        self._post("toggle")
+
+    def set_recording_status(self, is_recording: bool) -> None:
+        if is_recording == self._last_recording:
             return
-        
-        print("⏹️  Stopping overlay window...")
-        
-        self.is_running = False
-        
-        if self.overlay:
-            self.overlay.stop()
-        
-        if self.overlay_thread:
-            self.overlay_thread.join(timeout=2.0)
-        
-        print("✅ Overlay window stopped")
-    
-    def update_text(self, text: str, confidence: float = 0.0):
-        """
-        Update overlay text (thread-safe)
-        
-        Args:
-            text: Transcription text
-            confidence: Confidence score
-        """
-        self.ui_queue.put(('update_text', (text, confidence)))
-    
-    def update_partial(self, text: str):
-        """
-        Update partial text (thread-safe)
-        
-        Args:
-            text: Partial transcription
-        """
-        self.ui_queue.put(('update_partial', (text,)))
-    
-    def toggle(self):
-        """Toggle overlay visibility"""
-        self.ui_queue.put(('toggle', ()))
-    
-    def show(self):
-        """Show overlay"""
-        self.ui_queue.put(('show', ()))
-    
-    def hide(self):
-        """Hide overlay"""
-        self.ui_queue.put(('hide', ()))
-    
-    def set_recording_status(self, is_recording: bool):
-        """
-        Set recording status (thread-safe)
-        
-        Args:
-            is_recording: Recording status
-        """
-        # Skip duplicate updates (main loop pushes this frequently)
-        if is_recording == self._last_recording_status:
-            return
-        self._last_recording_status = is_recording
-        self.ui_queue.put(('set_recording_status', (is_recording,)))
+        self._last_recording = is_recording
+        self._post("set_recording_status", is_recording)
