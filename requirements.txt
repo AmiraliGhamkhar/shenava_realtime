@@ -1,2 +1,18 @@
-# Core inference orchestration and deterministic text processing (Python 3.10+)
-numpy>=1.24,<3
+# Core
+numpy
+
+# Audio
+sounddevice
+soundfile
+
+# Keyboard / hotkeys / text injection
+pynput
+pyperclip
+
+# ASR - Shenava Koochik / NVIDIA NeMo
+torch
+torchaudio
+nemo_toolkit[asr]
+
+# Development / testing
+pytest

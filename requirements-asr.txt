@@ -1,7 +1,0 @@
-# Native adapter targets the NeMo 2.4 API. Install matching torch/torchaudio
-# wheels for your CPU/CUDA platform before this file. Provision models explicitly.
--r requirements.txt
-torch==2.7.1
-torchaudio==2.7.1
-nemo_toolkit[asr]==2.4.0
-soundfile>=0.12,<1
