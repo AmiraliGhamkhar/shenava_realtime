@@ -26,8 +26,10 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from . import fa_numbers
 from .config import PostProcessConfig
-from .fst import TrieFST
+from .aho_corasick import AhoCorasickMatcher
 from .lexicon import UNITS, build_rewriter
+from .medical_pipeline import MedicalNormalizationPipeline, ProcessingResult
+from .terminology import TerminologyRule, default_rules
 from .text_normalize import ZWNJ, fix_punctuation, join_affixes, match_key, normalize
 
 logger = logging.getLogger(__name__)
@@ -44,12 +46,18 @@ class PostProcessor:
         extra_terms: Optional[Dict[str, str]] = None,
     ) -> None:
         self.config = config or PostProcessConfig()
-        self.fst: TrieFST = build_rewriter(
+        self.fst: AhoCorasickMatcher = build_rewriter(
             medical_terms=self.config.medical_terms,
             units=self.config.units,
             extra_terms=extra_terms,
         )
-        # Latin tokens the FST emits; used to tell "یک" (1) from "یک" (a/an).
+        rules = default_rules(medical_terms=self.config.medical_terms, units=self.config.units)
+        for index, (spoken, canonical) in enumerate((extra_terms or {}).items()):
+            # Build through the compatibility matcher first so conflicts fail fast.
+            rules.append(TerminologyRule(f"custom.{index}", canonical, (spoken,), priority=100))
+        self.medical_pipeline = MedicalNormalizationPipeline(rules, digits=self.config.digits.value)
+        self.last_result: Optional[ProcessingResult] = None
+        # Latin tokens the matcher emits; used to tell "یک" (1) from "یک" (a/an).
         self._unit_tokens: Set[str] = {
             match_key(token)
             for output in UNITS.values()
@@ -68,16 +76,11 @@ class PostProcessor:
             return text.strip()
 
         text = self.normalize_unicode(text)
-        text = self.apply_rules(text)
         if self.config.remove_repetitions:
-            text = self.remove_repetitions(text)
-        if self.config.convert_numbers:
-            text = fa_numbers.convert_numbers(
-                text,
-                digits=self.config.digits.value,
-                unit_tokens=self._unit_tokens,
-            )
-        return self.finalize(text)
+            text = self.remove_repetitions(text, self.medical_pipeline.matcher.find(text))
+        self.last_result = self.medical_pipeline.process_normalized(
+            text, convert_numbers=self.config.convert_numbers)
+        return self.finalize(self.last_result.canonical_text)
 
     # ------------------------------------------------------------------ #
     def normalize_unicode(self, text: str) -> str:
@@ -131,16 +134,21 @@ class PostProcessor:
         return words
 
     @staticmethod
-    def remove_repetitions(text: str) -> str:
-        """Collapse immediately repeated words (``بیمار بیمار`` -> ``بیمار``)."""
-        words = text.split(" ")
+    def remove_repetitions(text: str, protected_matches=()) -> str:
+        """Collapse CTC repetitions, except tokens belonging to known phrases."""
+        tokens = list(re.finditer(r"\S+", text))
+        protected = [(m.start, m.end) for m in protected_matches]
         out: List[str] = []
-        for word in words:
-            if not word:
+        previous = None
+        for token in tokens:
+            word = token.group()
+            is_protected = any(token.start() < end and start < token.end() for start, end in protected)
+            previous_protected = previous is not None and any(
+                previous.start() < end and start < previous.end() for start, end in protected)
+            if previous is not None and match_key(previous.group()) == match_key(word) and not (
+                    is_protected or previous_protected):
                 continue
-            if out and match_key(out[-1]) == match_key(word):
-                continue
-            out.append(word)
+            out.append(word); previous = token
         return " ".join(out)
 
     def finalize(self, text: str) -> str:

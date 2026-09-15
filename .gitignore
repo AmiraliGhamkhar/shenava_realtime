@@ -26,4 +26,5 @@ Thumbs.db
 *.db
 *.db-*
 *.jsonl
+!tests/corpus/medical_regression.jsonl
 app.log.*

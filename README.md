@@ -5,8 +5,9 @@ embeddings, vector database, edit-distance or semantic matching.
 
 ```text
 16 kHz mono audio → RMS VAD → Shenava cache-aware greedy CTC
-  → transcript stabilization → Persian normalization → medical Trie/FST
-  → numbers/units/punctuation → stable text → overlay / keyboard / clipboard
+  → transcript stabilization → Persian normalization → protected spans
+  → token Aho–Corasick → deterministic span resolver → typed grammars
+  → canonical stable text → overlay / keyboard / clipboard
                                          └→ optional dictionary NER → rules
                                              → JSONL / SQLite
 ```
@@ -189,8 +190,31 @@ not be deleted. The FST/stabilizer handle ASR output deterministically instead.
 
 ## Deterministic text processing
 
-Rules in `lexicon.py`, longest-match token trie in `fst.py`, normalization in
-`text_normalize.py`, numeric grammar in `fa_numbers.py`.
+The production path is structured and span-based:
+
+```text
+normalized ASR → token offsets / protected spans
+ → token Aho–Corasick (all overlapping candidates)
+ → leftmost-longest / priority / risk / context resolver
+ → Persian numbers → typed measurements / BP → medication-dose grammar
+ → dictionary concepts → negation / laterality → safety validation → render
+```
+
+Reviewed structured rules live in `shenava_realtime/data/terminology.json`; each
+has an ID, canonical form, explicit spoken/alias/phonetic forms, category,
+specialty, priority, risk and context/sensitivity flags. `terminology.py`
+validates this schema. `aho_corasick.py` is a dependency-free matcher abstraction,
+`span_resolver.py` owns selection policy, `number_grammar.py` preserves semantic
+number offsets, and `medical_grammar.py` contains measurement, medication and
+conservative context grammars. The old `TrieFST` remains importable for NER/API
+compatibility but is no longer the terminology normalization engine.
+
+The matcher returns all nested/overlapping candidates and never rewrites during
+scanning. Resolution is deterministic: leftmost, longest, explicit priority,
+risk policy, then bounded context constraints. High-risk or context-required
+rules are preserved and set `ProcessingResult.review_required`; optional
+contextual/LLM resolution is an explicit disabled extension point. There is no
+fuzzy matching or unrestricted generation.
 
 ```text
 سي اي بي جي                  → CABG
@@ -211,8 +235,22 @@ explicit numeric ratios are retained. This is deliberately a small grammar,
 not full Persian language understanding; extend it with reviewed examples/tests.
 
 Custom terminology: `PostProcessor(extra_terms={"spoken form": "canonical"})`.
-Conflicting trie rules raise at `PostProcessor` construction time, before any
-audio runs — never lazily on first match.
+Conflicting normalized rules raise at `PostProcessor` construction time, before
+any audio runs — never lazily on first match. For metadata-rich deployments,
+construct `TerminologyRule` records and `MedicalNormalizationPipeline` directly.
+
+`PostProcessor.process()` remains string-in/string-out. Its `last_result` exposes
+numbers, measurements, medication/dose/frequency fields, clinical assertions,
+anatomy/laterality, protected spans and explicit review reasons. Offsets refer to
+the Unicode-normalized input and remain half-open. Date/time, existing ratios,
+important abbreviations, parsed numbers, measurements and medication expressions
+are protected from later rewrites. A unit, dose, relationship, assertion or side
+is never supplied when its required explicit structure is absent.
+
+Negation scope is deliberately local and conservative (`بدون تب`, `تب ندارد`,
+`وجود ندارد`, `مشاهده نشد`, `منفی است`); historical/possible cues and right,
+left or bilateral anatomy are represented as metadata rather than rewritten.
+This is not full clinical reasoning. Unknown/ambiguous text remains unchanged.
 
 ## Optional clinical extraction / persistence
 
@@ -253,9 +291,17 @@ by Git. Third-party NeMo logs should also be audited before handling patient dat
 ```bash
 pytest -q
 python main.py --self-test
+python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
 python tools/verify_pipeline.py --model /models/shenava-koochik-v1.0.nemo \
   --wav /data/consented-persian-sample.wav --device cpu --right-context 13
 ```
+
+`evaluate_medical.py` reports raw-ASR and post-processing WER/CER separately,
+category error rates (medical terms, medications, numbers, units, negation and
+laterality), and entity precision/recall/F1. The bundled corpus is a small
+engineering regression fixture, not a representative clinical benchmark; its
+scores must not be presented as clinical accuracy or generalized improvement.
+Use a versioned, consented domain corpus for deployment decisions.
 
 Replay requires PCM16, mono, 16 kHz WAV and runs at microphone speed. It uses the
 real backend unless `--self-test` is explicitly supplied. Native streaming is
