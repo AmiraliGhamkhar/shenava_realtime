@@ -1,0 +1,1485 @@
+{
+  "schema_version": 1,
+  "rules": [
+    {
+      "id": "term.0000",
+      "canonical": "CABG",
+      "spoken_forms": [
+        "کابج",
+        "ک ا ب ج",
+        "سی ای بی جی"
+      ],
+      "aliases": [
+        "CABG"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0001",
+      "canonical": "PCI",
+      "spoken_forms": [
+        "پی سی آی"
+      ],
+      "aliases": [
+        "PCI"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0002",
+      "canonical": "PTCA",
+      "spoken_forms": [
+        "پی تی سی آی"
+      ],
+      "aliases": [
+        "PTCA"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0003",
+      "canonical": "EKG",
+      "spoken_forms": [
+        "ای کی جی"
+      ],
+      "aliases": [
+        "EKG"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0004",
+      "canonical": "ECG",
+      "spoken_forms": [
+        "ای سی جی",
+        "نوار قلب"
+      ],
+      "aliases": [
+        "ECG"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0005",
+      "canonical": "اکوکاردیوگرافی",
+      "spoken_forms": [
+        "اکو کاردیوگرافی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0006",
+      "canonical": "MI",
+      "spoken_forms": [
+        "انفارکتوس میوکارد"
+      ],
+      "aliases": [
+        "MI"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0007",
+      "canonical": "CHF",
+      "spoken_forms": [
+        "نارسایی احتقانی قلب"
+      ],
+      "aliases": [
+        "CHF"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0008",
+      "canonical": "CAD",
+      "spoken_forms": [
+        "بیماری عروق کرونر"
+      ],
+      "aliases": [
+        "CAD"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0009",
+      "canonical": "BP",
+      "spoken_forms": [
+        "فشار خون",
+        "ب پی"
+      ],
+      "aliases": [
+        "BP"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0010",
+      "canonical": "CT",
+      "spoken_forms": [
+        "سی تی اسکن",
+        "سی تی"
+      ],
+      "aliases": [
+        "CT"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0011",
+      "canonical": "MRI",
+      "spoken_forms": [
+        "ام آر آی"
+      ],
+      "aliases": [
+        "MRI"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0012",
+      "canonical": "CBC",
+      "spoken_forms": [
+        "سی بی سی"
+      ],
+      "aliases": [
+        "CBC"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0013",
+      "canonical": "FBS",
+      "spoken_forms": [
+        "قند خون ناشتا"
+      ],
+      "aliases": [
+        "FBS"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0014",
+      "canonical": "HbA1c",
+      "spoken_forms": [
+        "هموگلوبین ای وان سی"
+      ],
+      "aliases": [
+        "HbA1c"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0015",
+      "canonical": "INR",
+      "spoken_forms": [
+        "ای ان آر"
+      ],
+      "aliases": [
+        "INR"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0016",
+      "canonical": "CRP",
+      "spoken_forms": [
+        "سی آر پی"
+      ],
+      "aliases": [
+        "CRP"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0017",
+      "canonical": "BNP",
+      "spoken_forms": [
+        "بی ان پی"
+      ],
+      "aliases": [
+        "BNP"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0018",
+      "canonical": "SpO2",
+      "spoken_forms": [
+        "اکسیژن خون",
+        "اشباع اکسیژن",
+        "ساتوراسیون"
+      ],
+      "aliases": [
+        "SpO2"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0019",
+      "canonical": "ICU",
+      "spoken_forms": [
+        "آی سی یو"
+      ],
+      "aliases": [
+        "ICU"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0020",
+      "canonical": "CCU",
+      "spoken_forms": [
+        "سی سی یو"
+      ],
+      "aliases": [
+        "CCU"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0021",
+      "canonical": "NICU",
+      "spoken_forms": [
+        "ان آی سی یو"
+      ],
+      "aliases": [
+        "NICU"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0022",
+      "canonical": "CPR",
+      "spoken_forms": [
+        "سی پی آر"
+      ],
+      "aliases": [
+        "CPR"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0023",
+      "canonical": "DVT",
+      "spoken_forms": [
+        "دی وی تی"
+      ],
+      "aliases": [
+        "DVT"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0024",
+      "canonical": "PE",
+      "spoken_forms": [
+        "آمبولی ریه",
+        "پی ای"
+      ],
+      "aliases": [
+        "PE"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0025",
+      "canonical": "CVA",
+      "spoken_forms": [
+        "سکته مغزی"
+      ],
+      "aliases": [
+        "CVA"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0026",
+      "canonical": "CKD",
+      "spoken_forms": [
+        "بیماری مزمن کلیه"
+      ],
+      "aliases": [
+        "CKD"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0027",
+      "canonical": "IV",
+      "spoken_forms": [
+        "آی وی"
+      ],
+      "aliases": [
+        "IV"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0028",
+      "canonical": "IM",
+      "spoken_forms": [
+        "آی ام"
+      ],
+      "aliases": [
+        "IM"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0029",
+      "canonical": "PO",
+      "spoken_forms": [
+        "پی او"
+      ],
+      "aliases": [
+        "PO"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0030",
+      "canonical": "SC",
+      "spoken_forms": [
+        "اس سی"
+      ],
+      "aliases": [
+        "SC"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0031",
+      "canonical": "IV cannula",
+      "spoken_forms": [
+        "آنژیوکت"
+      ],
+      "aliases": [
+        "IV cannula"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0032",
+      "canonical": "CVC",
+      "spoken_forms": [
+        "سی وی سی"
+      ],
+      "aliases": [
+        "CVC"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "term.0033",
+      "canonical": "NGT",
+      "spoken_forms": [
+        "ان جی تی"
+      ],
+      "aliases": [
+        "NGT"
+      ],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.ct_angiography",
+      "canonical": "CT آنژیوگرافی",
+      "spoken_forms": [
+        "سی تی آنژیوگرافی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "unit.0000",
+      "canonical": "mcg",
+      "spoken_forms": [
+        "میکرو گرم",
+        "میکروگرم",
+        "μg"
+      ],
+      "aliases": [
+        "mcg"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0001",
+      "canonical": "mg",
+      "spoken_forms": [
+        "میلی گرم",
+        "میلیگرم",
+        "milligram",
+        "milligrams"
+      ],
+      "aliases": [
+        "mg"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0002",
+      "canonical": "g",
+      "spoken_forms": [
+        "گرم"
+      ],
+      "aliases": [
+        "g"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0003",
+      "canonical": "kg",
+      "spoken_forms": [
+        "کیلو گرم",
+        "کیلوگرم"
+      ],
+      "aliases": [
+        "kg"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0004",
+      "canonical": "mL",
+      "spoken_forms": [
+        "میلی لیتر",
+        "میلیلیتر"
+      ],
+      "aliases": [
+        "mL"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0005",
+      "canonical": "L",
+      "spoken_forms": [
+        "لیتر"
+      ],
+      "aliases": [
+        "L"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0006",
+      "canonical": "cc",
+      "spoken_forms": [
+        "سی سی"
+      ],
+      "aliases": [
+        "cc"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0007",
+      "canonical": "mm",
+      "spoken_forms": [
+        "میلی متر",
+        "میلیمتر"
+      ],
+      "aliases": [
+        "mm"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0008",
+      "canonical": "cm",
+      "spoken_forms": [
+        "سانتی متر",
+        "سانتیمتر"
+      ],
+      "aliases": [
+        "cm"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0009",
+      "canonical": "m",
+      "spoken_forms": [
+        "متر"
+      ],
+      "aliases": [
+        "m"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0010",
+      "canonical": "mEq/L",
+      "spoken_forms": [
+        "میلی اکی والان",
+        "میلی اکیوالان"
+      ],
+      "aliases": [
+        "mEq/L"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0011",
+      "canonical": "IU",
+      "spoken_forms": [
+        "واحد بین المللی"
+      ],
+      "aliases": [
+        "IU"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0012",
+      "canonical": "U insulin",
+      "spoken_forms": [
+        "واحد انسولین"
+      ],
+      "aliases": [
+        "U insulin"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0013",
+      "canonical": "°C",
+      "spoken_forms": [
+        "درجه سانتیگراد",
+        "درجه سانتی گراد",
+        "سانتیگراد"
+      ],
+      "aliases": [
+        "°C"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0014",
+      "canonical": "°",
+      "spoken_forms": [
+        "درجه"
+      ],
+      "aliases": [
+        "°"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0015",
+      "canonical": "bpm",
+      "spoken_forms": [
+        "ضربان در دقیقه",
+        "ضربان قلب در دقیقه",
+        "بار در دقیقه"
+      ],
+      "aliases": [
+        "bpm"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0016",
+      "canonical": "rpm",
+      "spoken_forms": [
+        "نفس در دقیقه",
+        "دور در دقیقه"
+      ],
+      "aliases": [
+        "rpm"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0017",
+      "canonical": "gtt/min",
+      "spoken_forms": [
+        "قطره در دقیقه"
+      ],
+      "aliases": [
+        "gtt/min"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0018",
+      "canonical": "mg/min",
+      "spoken_forms": [
+        "میلی گرم در دقیقه"
+      ],
+      "aliases": [
+        "mg/min"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0019",
+      "canonical": "mg/h",
+      "spoken_forms": [
+        "میلی گرم در ساعت"
+      ],
+      "aliases": [
+        "mg/h"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0020",
+      "canonical": "mg/day",
+      "spoken_forms": [
+        "میلی گرم در روز"
+      ],
+      "aliases": [
+        "mg/day"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0021",
+      "canonical": "mL/h",
+      "spoken_forms": [
+        "میلی لیتر در ساعت"
+      ],
+      "aliases": [
+        "mL/h"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0022",
+      "canonical": "mL/min",
+      "spoken_forms": [
+        "میلی لیتر در دقیقه"
+      ],
+      "aliases": [
+        "mL/min"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0023",
+      "canonical": "mg/dL",
+      "spoken_forms": [
+        "میلی گرم در دسی لیتر"
+      ],
+      "aliases": [
+        "mg/dL"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0024",
+      "canonical": "mmol/L",
+      "spoken_forms": [
+        "میلی مول در لیتر"
+      ],
+      "aliases": [
+        "mmol/L"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0025",
+      "canonical": "mmHg",
+      "spoken_forms": [
+        "میلی متر جیوه"
+      ],
+      "aliases": [
+        "mmHg"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0026",
+      "canonical": "mcg/mL",
+      "spoken_forms": [
+        "میکروگرم در میلی لیتر"
+      ],
+      "aliases": [
+        "mcg/mL"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0027",
+      "canonical": "mcg/min",
+      "spoken_forms": [
+        "میکرو گرم در دقیقه"
+      ],
+      "aliases": [
+        "mcg/min"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "unit.0028",
+      "canonical": "%",
+      "spoken_forms": [
+        "درصد",
+        "در صد"
+      ],
+      "aliases": [
+        "%"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "anatomy.knee",
+      "canonical": "زانو",
+      "spoken_forms": [
+        "زانو"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "anatomy",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": true,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "anatomy.hand",
+      "canonical": "دست",
+      "spoken_forms": [
+        "دست"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "anatomy",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": true,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "anatomy.kidney",
+      "canonical": "کلیه",
+      "spoken_forms": [
+        "کلیه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "anatomy",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": true,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.diabetes",
+      "canonical": "دیابت",
+      "spoken_forms": [
+        "دیابت"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.fever",
+      "canonical": "تب",
+      "spoken_forms": [
+        "تب"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.dyspnea",
+      "canonical": "تنگی نفس",
+      "spoken_forms": [
+        "تنگی نفس"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "pulmonology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.chest_pain",
+      "canonical": "درد قفسه سینه",
+      "spoken_forms": [
+        "درد قفسه سینه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "cardiology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "medication.metformin",
+      "canonical": "متفورمین",
+      "spoken_forms": [
+        "متفورمین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.aspirin",
+      "canonical": "آسپرین",
+      "spoken_forms": [
+        "آسپرین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.insulin",
+      "canonical": "انسولین",
+      "spoken_forms": [
+        "انسولین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    }
+  ]
+}

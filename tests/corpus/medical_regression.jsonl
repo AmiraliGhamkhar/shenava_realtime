@@ -1,0 +1,6 @@
+{"raw":"سی تی آنژیوگرافی انجام شد","reference":"CT آنژیوگرافی انجام شد","entities":[{"type":"term","text":"CT آنژیوگرافی"}]}
+{"raw":"متفورمین پانصد میلی گرم روزی دو بار","reference":"متفورمین 500 mg روزی 2 بار","entities":[{"type":"medication","text":"متفورمین"},{"type":"number","text":"500"},{"type":"unit","text":"mg"},{"type":"number","text":"2"}]}
+{"raw":"فشار خون صد و بیست روی هشتاد","reference":"BP 120/80","entities":[{"type":"term","text":"BP"},{"type":"number","text":"120"},{"type":"number","text":"80"},{"type":"unit","text":"mmHg"}]}
+{"raw":"تب ندارد و زانو راست درد دارد","reference":"تب ندارد و زانو راست درد دارد","entities":[{"type":"negation","text":"تب"},{"type":"laterality","text":"right"}]}
+{"raw":"اشباع اکسیژن نود و هشت درصد","reference":"SpO2 98%","entities":[{"type":"term","text":"SpO2"},{"type":"number","text":"98"},{"type":"unit","text":"%"}]}
+{"raw":"متن ناشناخته باید بدون تغییر بماند","reference":"متن ناشناخته باید بدون تغییر بماند","entities":[]}

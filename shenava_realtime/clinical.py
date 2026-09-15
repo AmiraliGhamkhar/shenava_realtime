@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from .fst import TrieFST
+from .medical_grammar import ClinicalContextGrammar
 from .text_normalize import digits_to_ascii
 
 logger = logging.getLogger(__name__)
@@ -68,11 +69,16 @@ class DictionaryNER:
 def extract_record(text: str, ner: Optional[DictionaryNER] = None) -> dict:
     entities = (ner or DictionaryNER()).extract(text)
     mentions = []
+    context = ClinicalContextGrammar()
+    scoped = {(span.start, span.end): span for span in context.parse(
+        text, ((entity.text, entity.start, entity.end) for entity in entities))}
     for entity in entities:
-        # Only explicit adjacent negation, bounded by sentence punctuation.
-        suffix = text[entity.end:entity.end + 32]
-        assertion = "negated" if re.match(r"\s+(?:ندارد|نیست|رد شد)(?:\W|$)", suffix) else "unspecified"
-        mentions.append({**asdict(entity), "assertion": assertion})
+        span = scoped[(entity.start, entity.end)]
+        # Preserve the legacy "unspecified" positive value in persisted JSON,
+        # while exposing conservative non-present assertions when explicit.
+        assertion = "unspecified" if span.assertion == "present" else span.assertion
+        mentions.append({**asdict(entity), "assertion": assertion,
+                         "experiencer": span.experiencer})
     measurements = []
     # No plausibility-based suppression: abnormal values remain reviewable.
     pattern = r"(?<![\w.])(-?\d+(?:\.\d+)?(?:/\d+)?)\s*(mmHg|mg/dL|mmol/L|mcg/min|mg/min|mL/h|mg|mcg|mL|kg|bpm|rpm|°C|°F|%)(?!\w)"

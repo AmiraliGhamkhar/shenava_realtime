@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from .fst import TrieFST
+from .aho_corasick import AhoCorasickMatcher
 
 # --------------------------------------------------------------------------- #
 # Medical terminology / abbreviations (Persian spoken form -> standard acronym)
@@ -131,9 +131,9 @@ def build_rewriter(
     medical_terms: bool = True,
     units: bool = True,
     extra_terms: Dict[str, str] | None = None,
-) -> TrieFST:
-    """Build the deterministic phrase transducer from the tables above."""
-    fst = TrieFST()
+) -> AhoCorasickMatcher:
+    """Build the deterministic multi-pattern transducer (compatibility API)."""
+    fst = AhoCorasickMatcher()
     if medical_terms:
         fst.add_many(MEDICAL_TERMS)
         fst.add_many({value: value for value in MEDICAL_TERMS.values() if value.isascii()})
