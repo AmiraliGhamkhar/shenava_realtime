@@ -11,6 +11,7 @@ import numpy as np
 
 from .asr_backend import CacheAwareStream
 from .config import ASRConfig
+from .second_pass import GreedySecondPass, SecondPassDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,14 @@ class StreamingDecoder(ABC):
     def finalize(self) -> Optional[DecodeResult]:
         """Flush whatever audio has not been decoded yet."""
         return self.push(_EMPTY, force=True)
+
+    def utterance_audio(self) -> Optional[np.ndarray]:
+        """Raw audio of the current segment, for an optional second pass.
+
+        ``None`` when the decoder does not retain it (e.g. endpoint mode,
+        where the single offline decode already *is* the full-context pass).
+        """
+        return None
 
 
 class EndpointDecoder(StreamingDecoder):
@@ -84,14 +93,22 @@ class CacheAwareDecoder(StreamingDecoder):
         stream: CacheAwareStream,
         sample_rate: int = 16000,
         min_new_audio_s: float = 0.25,
+        max_segment_s: float = 22.0,
     ) -> None:
         self._stream = stream
         self._sample_rate = max(1, int(sample_rate))
         self._min_new_samples = max(1, int(round(min_new_audio_s * self._sample_rate)))
+        # Bounded per-utterance audio buffer for the optional second pass
+        # (at most the segment cap: ~1.4 MB at 22 s).
+        self._segment_limit = max(1, int(max_segment_s * self._sample_rate))
         self._pending = _EMPTY
+        self._utterance = _EMPTY
+        self._utterance_samples = 0
 
     def reset(self) -> None:
         self._pending = _EMPTY
+        self._utterance = _EMPTY
+        self._utterance_samples = 0
         self._stream.reset()
 
     def push(self, audio: np.ndarray, force: bool = False) -> Optional[DecodeResult]:
@@ -100,6 +117,13 @@ class CacheAwareDecoder(StreamingDecoder):
             raise ValueError("Invalid streaming audio block")
         if samples.size:
             self._pending = np.concatenate([self._pending, samples]) if self._pending.size else samples.copy()
+            if self._utterance_samples + samples.size <= self._segment_limit:
+                self._utterance = (
+                    np.concatenate([self._utterance, samples])
+                    if self._utterance.size
+                    else samples.copy()
+                )
+                self._utterance_samples += samples.size
         if self._pending.size == 0:
             return None
         if not force and self._pending.size < self._min_new_samples:
@@ -114,6 +138,9 @@ class CacheAwareDecoder(StreamingDecoder):
             reset=False,
             decoded_seconds=chunk.size / float(self._sample_rate),
         )
+
+    def utterance_audio(self) -> Optional[np.ndarray]:
+        return None if self._utterance_samples == 0 else self._utterance
 
     def finalize(self) -> Optional[DecodeResult]:
         result = self.push(_EMPTY, force=True)
@@ -139,8 +166,43 @@ def make_decoder(
         stream = factory()
         if stream is not None:
             logger.info("streaming decoder: cache-aware")
-            return CacheAwareDecoder(stream, sample_rate, config.partial_interval_s)
+            return CacheAwareDecoder(
+                stream, sample_rate, config.partial_interval_s, config.max_segment_s
+            )
     if config.require_streaming:
         raise RuntimeError("Checkpoint does not support configured cache-aware streaming")
     logger.warning("Native streaming unavailable/disabled; using endpoint-only CTC fallback")
     return EndpointDecoder(backend.transcribe, sample_rate, config.max_segment_s)
+
+
+def make_second_pass(
+    backend: ASRBackend,
+    asr_config: Optional[ASRConfig] = None,
+) -> Optional[SecondPassDecoder]:
+    """Build the optional utterance-end second pass from configuration.
+
+    ``off`` -> None.  ``greedy`` -> one offline greedy re-decode via the
+    existing backend (works with any backend that has ``transcribe``).
+    ``context`` -> CTC beam + hotword biasing via the backend's own
+    ``build_second_pass`` (NeMo); a missing capability is a startup error,
+    never a silent mode switch.
+    """
+    config = asr_config or ASRConfig()
+    config.__post_init__()
+    if config.second_pass == "off":
+        return None
+    if config.second_pass == "context":
+        # A specifically requested capability that is absent is a startup
+        # error, never a silent degrade to streaming-only decoding.
+        factory = getattr(backend, "build_second_pass", None)
+        if not callable(factory):
+            raise RuntimeError(
+                'second_pass="context" requires a backend providing '
+                "build_second_pass() (the NeMo backend); use \"greedy\" or \"off\""
+            )
+        return factory(config)
+    transcribe = getattr(backend, "transcribe", None)
+    if not callable(transcribe):
+        logger.warning("second pass disabled: backend has no transcribe()")
+        return None
+    return GreedySecondPass(transcribe)

@@ -182,6 +182,16 @@ class ASRConfig:
     max_window_s: float = 10.0
     use_cache_aware_streaming: bool = True
 
+    # Utterance-end second pass (natural endpoints only, endpoint-commit mode):
+    # "off" = streaming greedy only; "greedy" = one offline greedy re-decode;
+    # "context" = CTC beam + terminology hotword biasing (falls back to the
+    # offline greedy result when biasing is unusable, always logged).
+    second_pass: str = "greedy"
+    second_pass_min_utterance_s: float = 0.5
+    second_pass_beam_size: int = 4
+    hotword_specialty: Optional[str] = None  # e.g. "cardiology"; None = general set only
+    hotword_max: int = 64
+
     def __post_init__(self) -> None:
         if self.decoder_type != "ctc":
             raise ValueError("Only greedy CTC decoding is supported")
@@ -191,6 +201,16 @@ class ASRConfig:
             raise ValueError("Invalid ASR interval or segment limit")
         if self.num_threads < 1 or self.holdback_words < 0:
             raise ValueError("Invalid thread count or holdback")
+        if self.second_pass not in ("off", "greedy", "context"):
+            raise ValueError('second_pass must be "off", "greedy" or "context"')
+        if not 0 < self.second_pass_min_utterance_s <= 5:
+            raise ValueError("second_pass_min_utterance_s must be within (0, 5] seconds")
+        if not 1 <= self.second_pass_beam_size <= 32:
+            raise ValueError("second_pass_beam_size must be within [1, 32]")
+        if not 1 <= self.hotword_max <= 512:
+            raise ValueError("hotword_max must be within [1, 512]")
+        if self.hotword_specialty is not None and not self.hotword_specialty.strip():
+            raise ValueError("hotword_specialty must be a non-empty name or null")
 
     # Transcript stabilization: words kept un-committed until they stop moving.
     holdback_words: int = 2
@@ -298,6 +318,13 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
     config.asr.allow_download = _env_bool("SHENAVA_ALLOW_DOWNLOAD", config.asr.allow_download)
     config.asr.require_streaming = _env_bool("SHENAVA_REQUIRE_STREAMING", config.asr.require_streaming)
     config.asr.right_context = _env_int("SHENAVA_RIGHT_CONTEXT", config.asr.right_context)
+    second_pass = _env("SHENAVA_SECOND_PASS")
+    if second_pass:
+        config.asr.second_pass = second_pass.strip().lower()
+    hotword_specialty = _env("SHENAVA_HOTWORD_SPECIALTY")
+    if hotword_specialty is not None:
+        config.asr.hotword_specialty = hotword_specialty.strip() or None
+    config.asr.hotword_max = _env_int("SHENAVA_HOTWORD_MAX", config.asr.hotword_max)
     audio_device = _env("SHENAVA_AUDIO_DEVICE")
     if audio_device:
         config.audio.device = int(audio_device) if audio_device.isdigit() else audio_device

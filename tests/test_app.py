@@ -65,3 +65,14 @@ def test_early_commit_without_medical_output_still_loads():
     config = _config()
     app = ShenavaApp(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
     assert app.asr.pipeline.commit_on_endpoint is False
+
+
+def test_second_pass_cli_flags_are_applied():
+    from main import build_config, parse_args
+    args = parse_args(["--second-pass", "context", "--hotword-specialty", "cardiology"])
+    config = build_config(args)
+    assert config.asr.second_pass == "context"
+    assert config.asr.hotword_specialty == "cardiology"
+    assert build_config(parse_args(["--second-pass", "off"])).asr.second_pass == "off"
+    # Default stays the conservative online default: greedy offline re-decode.
+    assert build_config(parse_args([])).asr.second_pass == "greedy"

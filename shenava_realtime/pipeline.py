@@ -21,6 +21,7 @@ import numpy as np
 
 from . import fa_numbers
 from .postprocessor import PostProcessor
+from .second_pass import SecondPassDecoder, SecondPassUtterance
 from .stabilizer import StabilizerConfig, TranscriptStabilizer
 from .streaming import StreamingDecoder
 
@@ -62,6 +63,10 @@ class TranscriptionPipeline:
         stabilizer: Optional[TranscriptStabilizer] = None,
         holdback_words: int = 2,
         commit_on_endpoint: bool = True,
+        second_pass: Optional[SecondPassDecoder] = None,
+        hotwords: Optional[list] = None,
+        second_pass_min_utterance_s: float = 0.5,
+        sample_rate: int = 16000,
     ) -> None:
         self.commit_on_endpoint = commit_on_endpoint
         self._latest = ""
@@ -77,6 +82,28 @@ class TranscriptionPipeline:
         # Forced VAD/ASR-cap boundary tracking (never set by a natural end).
         self._boundary_forced = False
         self._split_continues = False
+        self._emit_forced_protected = False
+
+        # Optional utterance-end second pass. It may only replace the final
+        # hypothesis of an utterance that has not been emitted yet, so it is
+        # inert in early-commit mode (injected text cannot be retracted).
+        self.second_pass = None
+        self._hotwords = list(hotwords or [])
+        self._second_pass_min_s = second_pass_min_utterance_s
+        self._sample_rate = max(1, int(sample_rate))
+        self._second_pass_runs = 0
+        self._second_pass_rewrites = 0
+        self._second_pass_fallbacks = 0
+        self._disagreement = False
+        self.last_review_reasons: list[str] = []
+        if second_pass is not None:
+            if commit_on_endpoint:
+                self.second_pass = second_pass
+            else:
+                logger.warning(
+                    "second pass disabled in early-commit mode: "
+                    "injected text cannot be rewritten"
+                )
 
     # ------------------------------------------------------------------ #
     @property
@@ -108,6 +135,14 @@ class TranscriptionPipeline:
     def decode_seconds(self) -> float:
         return self._decode_seconds
 
+    @property
+    def second_pass_stats(self) -> dict[str, int]:
+        return {
+            "runs": self._second_pass_runs,
+            "rewrites": self._second_pass_rewrites,
+            "fallbacks": self._second_pass_fallbacks,
+        }
+
     # ------------------------------------------------------------------ #
     def start_utterance(self, preroll: Optional[np.ndarray] = None) -> List[str]:
         """Begin a new utterance, discarding any leftover state.
@@ -123,6 +158,9 @@ class TranscriptionPipeline:
         self._confidence = 0.0
         self._latest = ""
         self._boundary_forced = False
+        self._disagreement = False
+        self._emit_forced_protected = False
+        self.last_review_reasons = []
         self._active = True
         if preroll is not None and np.asarray(preroll).size:
             return self.push_audio(np.asarray(preroll, dtype=np.float32))
@@ -162,19 +200,30 @@ class TranscriptionPipeline:
             raise
         finally:
             self._decode_seconds += time.perf_counter() - started
+        cap_cut = False
         if result is not None:
             self._decodes += 1
             self._confidence = result.confidence or self._confidence
             if result.reset:
                 self._boundary_forced = True  # decoder cap: also a forced cut
+                cap_cut = True
                 deltas.extend(self._commit_everything())
                 self._boundary_forced = forced
             self._latest = result.text
             if self.commit_on_endpoint:
                 self.stabilizer.reset()
             self.stabilizer.update(result.text)
+            # The second pass re-decodes the same utterance audio once, but
+            # only at a natural endpoint: a forced boundary means the speaker
+            # was still talking (incomplete audio), and nothing has been
+            # emitted yet in endpoint-commit mode, so replacing the final
+            # hypothesis here is not a re-injection.
+            if not forced and not cap_cut:
+                self._apply_second_pass()
         deltas.extend(self._commit_everything())
+        self.last_review_reasons = self._build_review_reasons(forced or cap_cut)
         self._boundary_forced = False
+        self._emit_forced_protected = False
         return [delta for delta in deltas if delta]
 
     def abort(self) -> None:
@@ -185,6 +234,9 @@ class TranscriptionPipeline:
         self._prefix = ""
         self._boundary_forced = False
         self._split_continues = False
+        self._emit_forced_protected = False
+        self._disagreement = False
+        self.last_review_reasons = []
         self._active = False
 
     # ------------------------------------------------------------------ #
@@ -237,6 +289,7 @@ class TranscriptionPipeline:
         if tail:
             self._split_continues = True
         if leading or tail:
+            self._emit_forced_protected = True
             logger.warning(
                 "number phrase %r spans a forced segment boundary; "
                 "keeping the spoken words unparsed",
@@ -256,6 +309,54 @@ class TranscriptionPipeline:
         delta = processed[len(self._emitted):]
         self._emitted = processed
         return delta
+
+    # ------------------------------------------------------------------ #
+    def _apply_second_pass(self) -> None:
+        """Re-decode this utterance once; may only replace unemitted text."""
+        if self.second_pass is None:
+            return
+        audio = self.decoder.utterance_audio()
+        if audio is None:
+            return
+        duration = audio.size / float(self._sample_rate)
+        if duration < self._second_pass_min_s:
+            return  # not enough decoder information for a second opinion
+        self._second_pass_runs += 1
+        utterance = SecondPassUtterance(audio=audio, duration_s=duration)
+        try:
+            text = None
+            if self._hotwords:
+                text = self.second_pass.decode_with_context(utterance, self._hotwords)
+            if text is None:
+                text = self.second_pass.decode_greedy(utterance)
+        except Exception:
+            self._second_pass_fallbacks += 1
+            logger.exception(
+                "second pass failed; keeping the streaming greedy result "
+                "(this fallback is explicit, not a mode switch)"
+            )
+            return
+        if text is None:
+            self._second_pass_fallbacks += 1
+            logger.warning("second pass produced no hypothesis; keeping greedy result")
+            return
+        if text != self._latest:
+            self._second_pass_rewrites += 1
+            self._disagreement = True
+            logger.info("second pass (%s) rewrote the final hypothesis", self.second_pass.name)
+            self._latest = text
+
+    def _build_review_reasons(self, forced: bool) -> list[str]:
+        """Structured review signals for this utterance (output is unchanged)."""
+        reasons: set[str] = set()
+        result = self.postprocessor.last_result
+        if result is not None:
+            reasons.update(result.review_reasons)
+        if forced or self._emit_forced_protected:
+            reasons.add("forced_boundary")
+        if self._disagreement:
+            reasons.add("decoder_disagreement")
+        return sorted(reasons)
 
 
 def _separated(text: str) -> str:

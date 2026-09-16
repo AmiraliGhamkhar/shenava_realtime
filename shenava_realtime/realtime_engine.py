@@ -24,9 +24,11 @@ import numpy as np
 
 from .audio_capture import AudioCapture
 from .config import AppConfig
+from .hotwords import build_hotwords
 from .pipeline import TranscriptionPipeline
 from .postprocessor import PostProcessor
-from .streaming import make_decoder
+from .streaming import make_decoder, make_second_pass
+from .terminology import default_rules
 from .utils import TextBuffer
 
 logger = logging.getLogger(__name__)
@@ -71,11 +73,31 @@ class RealtimeASR:
 
         postprocessor = PostProcessor(self.config.postprocess)
         decoder = make_decoder(self.backend, self.asr_config, self.config.audio.sample_rate)
+        second_pass = None
+        hotwords: list = []
+        if pipeline is None:
+            second_pass = make_second_pass(self.backend, self.asr_config)
+            # Decoder-time hotwords come from the same reviewed rules as the
+            # post-ASR normalization; only the context mode needs them.
+            if second_pass is not None and self.asr_config.second_pass == "context":
+                hotwords = build_hotwords(
+                    default_rules(),
+                    specialty=self.asr_config.hotword_specialty,
+                    max_hotwords=self.asr_config.hotword_max,
+                )
+                logger.info(
+                    "second pass hotwords: %d (specialty: %s)",
+                    len(hotwords), self.asr_config.hotword_specialty or "general",
+                )
         self.pipeline = pipeline or TranscriptionPipeline(
             decoder=decoder,
             postprocessor=postprocessor,
             holdback_words=self.asr_config.holdback_words,
             commit_on_endpoint=self.asr_config.commit_on_endpoint,
+            second_pass=second_pass,
+            hotwords=hotwords,
+            second_pass_min_utterance_s=self.asr_config.second_pass_min_utterance_s,
+            sample_rate=self.config.audio.sample_rate,
         )
         self.postprocessor = self.pipeline.postprocessor
 
@@ -112,6 +134,11 @@ class RealtimeASR:
     @property
     def partial_transcript(self) -> str:
         return self._partial_text
+
+    @property
+    def last_review_reasons(self) -> list[str]:
+        """Structured review flags for the last completed utterance (may be empty)."""
+        return list(self.pipeline.last_review_reasons)
 
     # ------------------------------------------------------------------ #
     def start(self) -> None:
@@ -298,9 +325,12 @@ class RealtimeASR:
 
     def get_statistics(self) -> Dict[str, Any]:
         audio_stats = self.audio_capture.get_statistics()
+        second_pass = self.pipeline.second_pass
         return {
             **self.stats,
             "decoder": getattr(self.pipeline.decoder, "name", "unknown"),
+            "second_pass": second_pass.name if second_pass is not None else "off",
+            "second_pass_stats": self.pipeline.second_pass_stats,
             "total_audio_duration": self.stats["audio_seconds"],
             "total_processing_time": self.stats["decode_seconds"],
             "num_chunks_processed": int(self.stats["decodes"]),

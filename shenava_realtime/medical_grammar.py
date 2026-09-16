@@ -9,6 +9,12 @@ from .spans import ClinicalSpan, MeasurementSpan, MedicationSpan, NumberSpan, Te
 from .text_normalize import match_key
 
 
+# Explicit vital-sign keywords: "نبض 72 در دقیقه" -> 72 bpm.  The keyword is
+# required evidence (adjacent, left of the value) and is NOT consumed from the
+# rendered output, so "نبض 72 bpm" keeps the word.
+_RATE_KEYWORDS = (("نبض", "bpm"), ("ضربان قلب", "bpm"), ("ضربان", "bpm"), ("نفس", "rpm"))
+
+
 class MeasurementGrammar:
     def __init__(self, enabled: bool = True) -> None:
         self.units = AhoCorasickMatcher()
@@ -27,6 +33,19 @@ class MeasurementGrammar:
                     results.append(MeasurementSpan(text[number.start:unit.end], value,
                         unit.pattern.output, number.start, unit.end, kind))
                     break
+        # Explicit rate keywords left of the value ("نبض/ضربان ... در دقیقه").
+        for number in numbers:
+            unit = self._rate_keyword_before(text, number)
+            if unit is None:
+                continue
+            if any(number.start < m.end and m.start < number.end for m in results):
+                continue  # the value already has an explicit unit
+            tail = re.match(r"\s+در\s+دقیقه(?!\w)", text[number.end:])
+            if tail is None:
+                continue
+            end = number.end + tail.end()
+            results.append(MeasurementSpan(text[number.start:end], number.value,
+                                           unit, number.start, end, "rate"))
         # Specialized, explicit BP connector. Plausibility is a safety policy,
         # not inference: implausible values remain unchanged.
         for left, right in zip(numbers, numbers[1:]):
@@ -47,12 +66,23 @@ class MeasurementGrammar:
         return selected
 
     @staticmethod
+    def _rate_keyword_before(text: str, number: NumberSpan) -> str | None:
+        words = text[:number.start].split()
+        if not words:
+            return None
+        if words[-1] in dict(_RATE_KEYWORDS):
+            return dict(_RATE_KEYWORDS)[words[-1]]
+        if len(words) >= 2 and " ".join(words[-2:]) == "ضربان قلب":
+            return "bpm"
+        return None
+
+    @staticmethod
     def _kind(unit: str) -> str:
         if unit == "%": return "percentage"
         if unit in {"°", "°C", "°F"}: return "temperature"
         if unit in {"kg", "g"}: return "weight"
         if unit in {"cm", "m", "mm"}: return "length"
-        if unit in {"mg", "mcg", "IU", "mL"}: return "dose"
+        if unit in {"mg", "mcg", "IU", "mL", "U insulin"}: return "dose"
         if unit in {"mg/dL", "mmol/L", "mEq/L"}: return "laboratory"
         return "measurement"
 
@@ -71,6 +101,10 @@ class MedicationGrammar:
         results = []; numbers = numbers or []
         for medication in _MEDICATIONS:
             for hit in re.finditer(rf"(?<!\w){re.escape(medication)}(?!\w)", text):
+                # The drug word inside a unit phrase ("واحد انسولین") is the
+                # unit, not a second medication mention.
+                if any(m.start <= hit.start() < m.end for m in measurements):
+                    continue
                 # Relationship is accepted only with an adjacent dose expression.
                 dose = next((m for m in measurements if m.kind == "dose" and m.start >= hit.end()
                              and re.fullmatch(r"\s*", text[hit.end():m.start])), None)

@@ -66,7 +66,35 @@ class DictionaryNER:
         return entities
 
 
-def extract_record(text: str, ner: Optional[DictionaryNER] = None) -> dict:
+def _record_review_reasons(text: str, measurements: list) -> list:
+    """Deterministic plausibility flags for persisted records (no rewriting)."""
+    reasons: list[str] = []
+    for m in measurements:
+        if m.get("kind") == "blood_pressure":
+            s, d = int(m["systolic"]), int(m["diastolic"])
+            if not (60 <= s <= 260 and 30 <= d <= 160 and s > d):
+                reasons.append(f"suspicious_value:bp_pair={s}/{d}")
+            continue
+        unit = m.get("unit")
+        try:
+            value = float(digits_to_ascii(str(m.get("value"))))
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            reasons.append(f"suspicious_value:nonpositive={m.get('value')}")
+        elif unit == "%" and not 0.0 <= value <= 100.0:
+            reasons.append(f"suspicious_value:percentage={value:g}")
+        elif unit in ("°", "°C") and not 25.0 <= value <= 45.0:
+            reasons.append(f"suspicious_value:temperature[{unit}]={value:g}")
+        elif unit == "°F" and not 77.0 <= value <= 113.0:
+            reasons.append(f"suspicious_value:temperature[°F]={value:g}")
+        elif unit == "bpm" and not 20.0 <= value <= 300.0:
+            reasons.append(f"suspicious_value:pulse={value:g}")
+    return sorted(set(reasons))
+
+
+def extract_record(text: str, ner: Optional[DictionaryNER] = None,
+                   review_reasons: Optional[list] = None) -> dict:
     entities = (ner or DictionaryNER()).extract(text)
     mentions = []
     context = ClinicalContextGrammar()
@@ -89,8 +117,11 @@ def extract_record(text: str, ner: Optional[DictionaryNER] = None) -> dict:
         measurements.append({"kind": "blood_pressure", "systolic": int(match[1]),
                              "diastolic": int(match[2]), "unit": None,
                              "start": match.start(), "end": match.end()})
+    reasons = sorted(set(list(review_reasons or [])) |
+                     set(_record_review_reasons(text, measurements)))
     return {"schema_version": 1, "text": text, "entities": mentions,
-            "measurements": measurements, "review_required": True}
+            "measurements": measurements, "review_required": True,
+            "review_reasons": reasons}
 
 
 class ClinicalWorker:
@@ -125,13 +156,13 @@ class ClinicalWorker:
         if self.error:
             raise RuntimeError("Clinical storage startup failed") from self.error
 
-    def submit(self, text: str) -> bool:
+    def submit(self, text: str, review_reasons: Optional[list] = None) -> bool:
         if self.stopping.is_set() or self.error or not self.thread or not self.thread.is_alive():
             return False
         if len(text) > 20000:
             raise ValueError("Clinical input exceeds utterance limit")
         try:
-            self.queue.put_nowait(text)
+            self.queue.put_nowait((text, list(review_reasons or [])))
             return True
         except queue.Full:
             self.dropped += 1
@@ -158,10 +189,11 @@ class ClinicalWorker:
             self.ready.set()
             while not self.stopping.is_set() or not self.queue.empty():
                 try:
-                    text = self.queue.get(timeout=0.1)
+                    item = self.queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
-                record = extract_record(text, ner)
+                text, reasons = item if isinstance(item, tuple) else (item, [])
+                record = extract_record(text, ner, review_reasons=reasons)
                 record["created_at"] = datetime.now(timezone.utc).isoformat()
                 payload = json.dumps(record, ensure_ascii=False)
                 if db:

@@ -22,6 +22,13 @@ class NeMoCacheAwareStream:
         self.normalize_type = helper.model_normalize_type
         self.normalize_batch = normalize_batch
         self.cfg = model.encoder.streaming_cfg
+        # Frontend audit: the app captures 16 kHz mono, so a checkpoint whose
+        # frontend is configured for anything else must fail at startup.
+        sample_rate = getattr(model.cfg.preprocessor, "sample_rate", 16000)
+        if int(sample_rate) != 16000:
+            raise RuntimeError(
+                f"Shenava requires a 16 kHz mono frontend, got sample_rate={sample_rate}"
+            )
         self.hop = int(round(model.cfg.preprocessor.window_stride * 16000))
         self.n_fft = int(self.preprocessor.featurizer.n_fft)
         if (getattr(self.preprocessor.featurizer, "exact_pad", False)

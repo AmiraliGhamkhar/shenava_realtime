@@ -67,6 +67,11 @@ class SyntheticBackend:
     def create_stream(self):
         return SyntheticStream()
 
+    def transcribe(self, audio):
+        # Same canned phrase as the streaming double: the second pass runs
+        # and agrees with the streaming greedy result, as it should here.
+        return 'بیمار دوز دو و نیم میلی گرم', 0.0
+
 
 class SyntheticStream:
     def reset(self):
@@ -108,7 +113,8 @@ def main(argv=None):
     capture = ReplayCapture(config.audio, blocks)
     engine = RealtimeASR(config, backend=backend, audio_capture=capture)
     records, deltas = [], []
-    engine.on_utterance_end = lambda text, _: records.append(extract_record(text))
+    engine.on_utterance_end = lambda text, _: records.append(
+        extract_record(text, review_reasons=engine.last_review_reasons))
     engine.on_text_delta = lambda text, _: deltas.append(text)
     try:
         engine.start()
