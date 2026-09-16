@@ -76,3 +76,15 @@ def test_second_pass_cli_flags_are_applied():
     assert build_config(parse_args(["--second-pass", "off"])).asr.second_pass == "off"
     # Default stays the conservative online default: greedy offline re-decode.
     assert build_config(parse_args([])).asr.second_pass == "greedy"
+
+
+def test_clinical_persistence_is_opt_in(tmp_path, monkeypatch):
+    # No --clinical-sqlite/--clinical-jsonl: no worker, no files, nothing to
+    # leak. The flags remain the only way to enable either sink.
+    monkeypatch.chdir(tmp_path)
+    config = AppConfig()
+    config.overlay.enabled = config.injector.enabled = False
+    app = ShenavaApp(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
+    assert app.clinical is None
+    assert not list(tmp_path.glob("*.sqlite*"))
+    assert not list(tmp_path.glob("*.jsonl"))

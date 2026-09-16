@@ -19,6 +19,7 @@ from typing import Mapping, Optional
 from .fst import TrieFST
 from .medical_grammar import ClinicalContextGrammar
 from .text_normalize import digits_to_ascii
+from .value_validation import bp_plausible, plausibility_reason
 
 logger = logging.getLogger(__name__)
 DEFAULT_ENTITIES = {
@@ -67,29 +68,26 @@ class DictionaryNER:
 
 
 def _record_review_reasons(text: str, measurements: list) -> list:
-    """Deterministic plausibility flags for persisted records (no rewriting)."""
+    """Deterministic plausibility flags for persisted records (no rewriting).
+
+    Deliberately reuses :mod:`value_validation` so a record can never carry a
+    different verdict (or a different reason label) than the pipeline check on
+    the same text: one source of truth for the explicit ranges.
+    """
     reasons: list[str] = []
     for m in measurements:
         if m.get("kind") == "blood_pressure":
             s, d = int(m["systolic"]), int(m["diastolic"])
-            if not (60 <= s <= 260 and 30 <= d <= 160 and s > d):
+            if not bp_plausible(s, d):
                 reasons.append(f"suspicious_value:bp_pair={s}/{d}")
             continue
-        unit = m.get("unit")
         try:
             value = float(digits_to_ascii(str(m.get("value"))))
         except (TypeError, ValueError):
-            continue
-        if value <= 0:
-            reasons.append(f"suspicious_value:nonpositive={m.get('value')}")
-        elif unit == "%" and not 0.0 <= value <= 100.0:
-            reasons.append(f"suspicious_value:percentage={value:g}")
-        elif unit in ("°", "°C") and not 25.0 <= value <= 45.0:
-            reasons.append(f"suspicious_value:temperature[{unit}]={value:g}")
-        elif unit == "°F" and not 77.0 <= value <= 113.0:
-            reasons.append(f"suspicious_value:temperature[°F]={value:g}")
-        elif unit == "bpm" and not 20.0 <= value <= 300.0:
-            reasons.append(f"suspicious_value:pulse={value:g}")
+            continue  # e.g. "120/80"-shaped values: judged by the BP check
+        reason = plausibility_reason(str(m.get("unit") or ""), value)
+        if reason is not None:
+            reasons.append(reason)
     return sorted(set(reasons))
 
 

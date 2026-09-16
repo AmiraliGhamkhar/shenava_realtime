@@ -269,7 +269,9 @@ def _blood_pressure(match: "re.Match[str]", digits: str = "ascii") -> str:
     systolic = int(match.group(1))
     diastolic = int(match.group(2))
     # Only rewrite when the pair is physiologically plausible; otherwise leave
-    # the sentence alone instead of guessing.
-    if 60 <= systolic <= 260 and 30 <= diastolic <= 160 and systolic > diastolic:
+    # the sentence alone instead of guessing.  The bounds live in
+    # value_validation so parse and review never disagree about plausibility.
+    from .value_validation import bp_plausible
+    if bp_plausible(systolic, diastolic):
         return format_number(systolic, digits) + "/" + format_number(diastolic, digits)
     return match.group(0)

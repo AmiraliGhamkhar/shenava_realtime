@@ -3,6 +3,8 @@ from shenava_realtime.postprocessor import PostProcessor
 from shenava_realtime.spans import MeasurementSpan, NumberSpan
 from shenava_realtime.value_validation import (
     ValueIssue,
+    bp_plausible,
+    plausibility_reason,
     validate_bp_pairs,
     validate_measurements,
 )
@@ -106,3 +108,65 @@ def test_issue_shape():
     issue = ValueIssue("percentage", "999%", "suspicious_value:percentage=999", 0, 4)
     assert (issue.kind, issue.text, issue.start, issue.end) == ("percentage", "999%", 0, 4)
     assert isinstance(issue, ValueIssue)
+
+
+# --------------------------------------------------------------------------- #
+# One shared set of ranges: the unit-driven check used by persisted records
+# must agree with the pipeline's typed-span check and with the BP grammar.
+# --------------------------------------------------------------------------- #
+def test_plausibility_reason_mirrors_the_pipeline_labels_and_ranges():
+    # (unit, value, expected reason or None) — identical verdicts on both sides.
+    cases = [
+        ("%", 102.0, "suspicious_value:percentage=102"),
+        ("%", 84.0, None),           # abnormal but possible: no opinion
+        ("%", 0.0, None),
+        ("%", -3.0, "suspicious_value:percentage=-3"),
+        ("°", 23.0, "suspicious_value:temperature[°]=23"),
+        ("°C", 24.5, None),          # 24–45: the documented survivable body range
+        ("°C", 24.0, None),
+        ("°F", 76.0, None),          # 75–113 for Fahrenheit
+        ("°F", 114.0, "suspicious_value:temperature[°F]=114"),
+        ("bpm", 1000.0, "suspicious_value:pulse=1000"),
+        ("mg", 0.0, "suspicious_value:dose=0"),
+        ("mcg", -5.0, "suspicious_value:dose=-5"),
+        ("kg", -5.0, None),          # not a dose unit: no opinion (pipeline too)
+        ("mmHg", 1.0, None),
+        ("unknown", 999.0, None),
+    ]
+    for unit, value, expected in cases:
+        assert plausibility_reason(unit, value) == expected, (unit, value)
+    kinds = {"%": "percentage", "°": "temperature", "°C": "temperature",
+             "°F": "temperature", "bpm": "rate", "mg": "dose", "mcg": "dose",
+             "kg": "weight", "mmHg": "blood_pressure", "unknown": "measurement"}
+    for unit, value, expected in cases:
+        # The typed-span check (kind-gated) must reach the same verdicts as
+        # the unit-driven check used by persisted clinical records.
+        span = MeasurementSpan(f"{value:g}{unit}", value, unit, 0, 4, kinds[unit])
+        reasons = [i.reason for i in validate_measurements([span])]
+        assert reasons == ([expected] if expected else []), (unit, value, reasons)
+
+
+def test_clinical_records_use_the_pipeline_ranges():
+    from shenava_realtime.clinical import extract_record
+    # 24.5 °C is plausible: neither the pipeline nor the record may flag it.
+    record = extract_record("دمای بدن 24.5 °C")
+    assert not any(r.startswith("suspicious_value") for r in record["review_reasons"])
+    record = extract_record("دمای بدن 23 °C")
+    assert "suspicious_value:temperature[°C]=23" in record["review_reasons"]
+    # Malformed dose: same label as the pipeline, never a correction.
+    record = extract_record("متفورمین 0 mg")
+    assert "suspicious_value:dose=0" in record["review_reasons"]
+    # Implausible persisted BP pair keeps the shared bp_pair reason.
+    record = extract_record("BP 80/120 ثبت شد")
+    assert "suspicious_value:bp_pair=80/120" in record["review_reasons"]
+    assert record["text"] == "BP 80/120 ثبت شد"  # preserved, not rewritten
+    # Merged with the caller's pipeline reasons without dropping either.
+    record = extract_record("BP 80/120", review_reasons=["dose_value"])
+    assert set(record["review_reasons"]) == {"dose_value", "suspicious_value:bp_pair=80/120"}
+
+
+def test_bp_plausible_is_the_single_gate():
+    assert bp_plausible(120, 80) and bp_plausible(260, 160)
+    assert not bp_plausible(80, 120)   # reversed
+    assert not bp_plausible(261, 120)
+    assert not bp_plausible(120, 29)

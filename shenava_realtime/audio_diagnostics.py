@@ -62,4 +62,5 @@ def crest_factor(diagnostics: SegmentDiagnostics) -> float:
     """Peak/RMS ratio (0.0 for silent segments); a steady tone is ~1.0."""
     if diagnostics.rms < SILENT_RMS:
         return 0.0
-    return math.isfinite(diagnostics.peak / diagnostics.rms) and diagnostics.peak / diagnostics.rms
+    ratio = diagnostics.peak / diagnostics.rms
+    return ratio if math.isfinite(ratio) else 0.0

@@ -1,18 +1,8 @@
-# Core
-numpy
-
-# Audio
-sounddevice
-soundfile
-
-# Keyboard / hotkeys / text injection
-pynput
-pyperclip
-
-# ASR - Shenava Koochik / NVIDIA NeMo
-torch
-torchaudio
-nemo_toolkit[asr]
-
-# Development / testing
-pytest
+# Full-stack convenience install. For a minimal or headless setup install the
+# split files instead (they are the ones the README and error messages name):
+#   requirements-dev.txt      core + test (numpy, pytest)
+#   requirements-desktop.txt  microphone/clipboard/hotkeys
+#   requirements-asr.txt      NeMo 2.4.0 + matching Torch/torchaudio 2.7.1
+-r requirements-asr.txt
+-r requirements-desktop.txt
+-r requirements-dev.txt
