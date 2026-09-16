@@ -55,14 +55,14 @@ inject into your local desktop; this repository is not a browser application.
 
 ### Models
 
-Primary: **Shenava Koochik v1.0, 114M**, hybrid FastConformer with CTC decoding.
+Primary: **Shenava Koochik v1.5, 114M**, hybrid FastConformer with CTC decoding.
 The bundled [model card](shenava-koochik/README.md) documents contexts
 `[70,13]`, `[70,6]`, `[70,1]`, `[70,0]` and model provenance.
 
 Provision the trusted `.nemo` checkpoint from
-[Reza2kn/Shenava-Koochik-v1.0](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0)
+[Reza2kn/Shenava-Koochik-v1.5](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.5)
 onto local storage, then set `SHENAVA_MODEL_PATH` or use `--model`. The default is
-`shenava-koochik/shenava-koochik-v1.0.nemo`. **Weights are not included.**
+`shenava-koochik/shenava-koochik-v1.5.nemo`. **Weights are not included.**
 NeMo checkpoints are executable serialization artifacts: do not load untrusted
 files. Verify the publisher's checksum when provisioning.
 
@@ -79,13 +79,13 @@ is loaded, avoiding doubled RAM and surprising model changes.
 ## Run
 
 ```bash
-python main.py --model /models/shenava-koochik-v1.0.nemo --device cpu
+python main.py --model /models/shenava-koochik-v1.5.nemo --device cpu
 # Strict native-streaming mode (recommended for deployment validation):
-python main.py --model /models/shenava-koochik-v1.0.nemo --require-streaming \
+python main.py --model /models/shenava-koochik-v1.5.nemo --require-streaming \
   --right-context 13 --output-mode console --no-overlay --no-inject
 # Disable (or restrict) the utterance-end second-pass decoder:
-python main.py --model /models/shenava-koochik-v1.0.nemo --second-pass off
-python main.py --model /models/shenava-koochik-v1.0.nemo \
+python main.py --model /models/shenava-koochik-v1.5.nemo --second-pass off
+python main.py --model /models/shenava-koochik-v1.5.nemo \
   --second-pass context --hotword-specialty cardiology
 python main.py --list-devices
 ```
@@ -158,7 +158,7 @@ launcher for detached desktop use; prefer the foreground command while debugging
   and `second_pass_stats` (`runs`/`rewrites`/`fallbacks`). In endpoint-only
   mode the single offline decode *is* the full-context pass, so the second
   pass is skipped (the decoder retains no separate streaming audio).
-- Default VAD: onset RMS .015, offset .008, 250 ms onset confirmation, 700 ms
+- Default VAD: adaptive quiet-floor RMS thresholds (bounded around onset .015 / offset .008), 250 ms onset confirmation, 700 ms
   endpoint silence, 320 ms pre-roll, 20 s maximum segment. Tune RMS thresholds
   to your microphone's gain/noise; this detector is not speech classification.
   Continuous speech creates explicit END/START boundaries without replaying
@@ -316,7 +316,7 @@ suggested fragment is printed for review only and is **never** written into
 ## Optional clinical extraction / persistence
 
 ```bash
-python main.py --model /models/shenava-koochik-v1.0.nemo \
+python main.py --model /models/shenava-koochik-v1.5.nemo \
   --clinical-sqlite clinical.sqlite --clinical-jsonl clinical.jsonl
 ```
 
@@ -353,7 +353,7 @@ by Git. Third-party NeMo logs should also be audited before handling patient dat
 pytest -q
 python main.py --self-test
 python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
-python tools/verify_pipeline.py --model /models/shenava-koochik-v1.0.nemo \
+python tools/verify_pipeline.py --model /models/shenava-koochik-v1.5.nemo \
   --wav /data/consented-persian-sample.wav --device cpu --right-context 13
 ```
 
@@ -381,6 +381,13 @@ startup/replay pass; native-cache tests use a tensor/model double. Real NeMo
 checkpoint compatibility, microphone/desktop behavior, Persian WER and CPU/GPU
 latency have **not** been verified here: weights and NeMo are absent, and the CPU
 PyTorch download attempt failed with a TLS/network error. Do not treat passing
+synthetic tests as production model certification. Before deployment, run real
+WAV/microphone tests on your hardware, test all chosen contexts and smaller
+checkpoints, confirm no overruns, and review representative medical dictations.
+
+See [the inspection and change notes](docs/REVIEW.md) for the original defects
+and remaining limitations.
+iled with a TLS/network error. Do not treat passing
 synthetic tests as production model certification. Before deployment, run real
 WAV/microphone tests on your hardware, test all chosen contexts and smaller
 checkpoints, confirm no overruns, and review representative medical dictations.

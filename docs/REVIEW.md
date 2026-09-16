@@ -193,3 +193,36 @@ non-dose negative values are no longer judged in one layer but not the other).
   startup error are pinned in `tests/test_second_pass.py`. Real NeMo
   checkpoint execution remains impossible here (weights/NeMo absent) and is
   still declared unverified below.
+
+## v1.5 migration (2026-09)
+
+The configured target is now `Reza2kn/Shenava-Koochik-v1.5`; the default
+production decoder remains CTC. `ASRConfig.decoder_type` accepts `ctc`, `rnnt`,
+or `auto` (`auto` is deliberately CTC). RNNT selection changes NeMo's native
+decoding strategy and validates the checkpoint's prediction/joint/decoder
+surface. No CTC algorithm is run after RNNT. The optional endpoint `greedy`
+second pass therefore remains decoder-aware because it calls the selected
+NeMo model; CTC context beam biasing is rejected for RNNT rather than silently
+cross-decoding.
+
+The backend now reports `ctc`, `rnnt`, `streaming`, `offline`, and
+`second_pass_context` capabilities after lazy loading. Native RNNT streaming is
+advertised only when the checkpoint exposes `rnnt_stream_step`; otherwise the
+bounded endpoint path is used unless `require_streaming` is set. API probing is
+intentional because NeMo hybrid model surfaces differ by release. Input remains
+validated as 16 kHz mono and the local checkpoint is never downloaded unless
+explicitly allowed.
+
+The CTC prefix beam now performs log-space state accumulation and prunes to the
+configured beam size (there is no hidden 64-wide pruning limit). VAD has a
+bounded quiet-only adaptive noise floor while retaining fixed hysteresis,
+pre-roll, duration limits, and deterministic state transitions. `tools/evaluate_audio.py`
+accepts labelled WAV JSONL and reports WER, CER, edit counts, forced-boundary
+rate, category presence rates, latency, and real-time factor. It does not claim
+accuracy improvement: no v1.5 checkpoint, CUDA hardware, or real clinical
+corpus was available in this checkout, so those results remain unverified.
+
+Known limitations: RNNT streaming and RNNT context-bias APIs can only be
+verified against the installed checkpoint/NeMo build; the adapter refuses
+unknown APIs. Category metrics require corresponding fields in metadata.
+Synthetic regression tests remain engineering tests, not clinical validation.

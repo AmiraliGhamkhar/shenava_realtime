@@ -259,7 +259,8 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
     parser.add_argument("--model", default=None, help="path to a local .nemo checkpoint")
     parser.add_argument("--device", default=None, help="torch device: auto, cpu, cuda, cuda:1")
-    parser.add_argument("--decoder", default=None, choices=["ctc"], help="greedy CTC decoder")
+    parser.add_argument("--decoder", default=None, choices=["ctc", "rnnt", "auto"],
+                        help="decoder backend (ctc is the production default; rnnt is experimental)")
     parser.add_argument("--threads", type=int, default=None, help="torch CPU thread count")
     parser.add_argument("--output-mode", choices=[mode.value for mode in OutputMode], default=None)
     parser.add_argument("--audio-device", default=None, help="input device index or name")

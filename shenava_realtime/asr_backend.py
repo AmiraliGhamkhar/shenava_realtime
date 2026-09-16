@@ -31,6 +31,10 @@ class ASRBackend(Protocol):
     def transcribe(self, audio: np.ndarray) -> Tuple[str, float]:  # pragma: no cover
         ...
 
+    def capabilities(self) -> dict[str, bool]:  # pragma: no cover
+        ...
+        ...
+
     def create_stream(self) -> Optional["CacheAwareStream"]:  # pragma: no cover
         ...
 
@@ -66,14 +70,48 @@ def _select_logits(output: Any, vocab_size: Optional[int]) -> Any:
     return None
 
 
+class NeMoRNNTStream:
+    """Small adapter for a checkpoint's *native* RNNT stream API.
+
+    No prediction/joint logic lives here: NeMo owns the state and decoding.
+    Checkpoint versions with a different API are rejected during capability
+    probing instead of being treated as CTC streams.
+    """
+    def __init__(self, model: Any) -> None:
+        self.model = model
+        self.state: Any = None
+
+    def reset(self) -> None:
+        reset = getattr(self.model, "reset_rnnt_stream", None)
+        if callable(reset):
+            reset()
+        self.state = None
+
+    def push(self, audio: np.ndarray) -> Tuple[str, float]:
+        result = self.model.rnnt_stream_step(np.asarray(audio, dtype=np.float32), state=self.state)
+        if isinstance(result, tuple) and len(result) == 2:
+            output, self.state = result
+        else:
+            output = result
+        return NeMoASR._extract(output)
+
+    def finalize(self) -> Tuple[str, float]:
+        flush = getattr(self.model, "rnnt_stream_finalize", None)
+        if not callable(flush):
+            return "", 0.0
+        return NeMoASR._extract(flush(state=self.state))
+
+
 class NeMoASR:
-    """Loads the Shenava checkpoint and decodes with its CTC head."""
+    """Loads Shenava v1.5 and selects CTC (default) or native RNNT."""
 
     def __init__(self, config: Optional[ASRConfig] = None) -> None:
         self.config = config or ASRConfig()
         self._model: Any = None
         self._torch: Any = None
         self._streaming_supported = False
+        self._capabilities: dict[str, bool] = {}
+        self.selected_decoder = "ctc"
         self.device: str = "cpu"
         self.load_seconds: float = 0.0
 
@@ -149,14 +187,31 @@ class NeMoASR:
 
         from omegaconf import OmegaConf
         decoding = OmegaConf.create({"strategy": "greedy", "preserve_alignments": False})
-        if hasattr(model, "ctc_decoder"):
-            model.change_decoding_strategy(decoding, decoder_type="ctc")
+        selected = "ctc" if self.config.decoder_type == "auto" else self.config.decoder_type
+        has_ctc = hasattr(model, "ctc_decoder") or hasattr(model, "ctc_decoding")
+        has_rnnt = any(getattr(model, name, None) is not None for name in
+                       ("rnnt_decoder", "rnnt_decoding", "prediction", "joint"))
+        if selected == "rnnt":
+            if not has_rnnt:
+                raise RuntimeError("decoder=rnnt requested, but the checkpoint exposes no RNNT prediction/joint decoder")
+            try:
+                model.change_decoding_strategy(decoding, decoder_type="rnnt")
+            except (TypeError, AttributeError) as exc:
+                raise RuntimeError("decoder=rnnt is not supported by this NeMo/checkpoint API") from exc
         else:
-            model.change_decoding_strategy(decoding)
+            if not has_ctc:
+                raise RuntimeError("decoder=ctc requested, but the checkpoint exposes no CTC decoder")
+            try:
+                model.change_decoding_strategy(decoding, decoder_type="ctc")
+            except TypeError:
+                model.change_decoding_strategy(decoding)
+        self.selected_decoder = selected
         self._model = model
-        self._streaming_supported = self._check_streaming_context(
-            model, self.config.right_context
-        )
+        self._streaming_supported = (self._check_streaming_context(model, self.config.right_context)
+                                     if selected == "ctc" else self._check_rnnt_streaming(model))
+        self._capabilities = {"ctc": bool(has_ctc), "rnnt": bool(has_rnnt),
+                              "streaming": bool(self._streaming_supported),
+                              "offline": True, "second_pass_context": selected == "ctc"}
         if self._streaming_supported:
             encoder = getattr(model, "encoder", None)
             encoder.set_default_att_context_size([70, self.config.right_context])
@@ -199,6 +254,15 @@ class NeMoASR:
             return False
         return callable(getattr(model, "conformer_stream_step", None))
 
+    def capabilities(self) -> dict[str, bool]:
+        if self._model is None:
+            self.load()
+        return dict(self._capabilities)
+
+    @staticmethod
+    def _check_rnnt_streaming(model: Any) -> bool:
+        return callable(getattr(model, "rnnt_stream_step", None))
+
     def resolve_checkpoint_path(self) -> Optional[Path]:
         """Find the configured checkpoint, tolerating relative paths.
 
@@ -239,6 +303,8 @@ class NeMoASR:
             self.load()
         if not self.config.use_cache_aware_streaming or not self._streaming_supported:
             return None
+        if getattr(self, "selected_decoder", "ctc") == "rnnt":
+            return NeMoRNNTStream(self._model)
         from .native_stream import NeMoCacheAwareStream
         return NeMoCacheAwareStream(self._model, self._import_torch(), self.config.max_segment_s)
 
@@ -248,6 +314,8 @@ class NeMoASR:
     # startup instead of silently running a different decoder.
     # ------------------------------------------------------------------ #
     def build_second_pass(self, config: "ASRConfig"):
+        if getattr(self, "selected_decoder", self.config.decoder_type) == "rnnt":
+            raise SecondPassUnavailable("RNNT context biasing requires a checkpoint-native RNNT decoder API; no CTC cross-decoding is attempted")
         from .second_pass import BeamSecondPass, GreedySecondPass
 
         model = self.model  # ensures the checkpoint is loaded

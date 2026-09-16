@@ -45,6 +45,10 @@ class VADConfig:
     min_silence_ms: int = 700
     pre_speech_ms: int = 320
     max_speech_s: float = 20.0
+    adaptive: bool = True
+    noise_floor_ms: int = 800
+    onset_multiplier: float = 3.0
+    offset_multiplier: float = 1.6
 
     def __post_init__(self) -> None:
         values = (self.onset_rms, self.offset_rms, self.max_speech_s,
@@ -59,6 +63,10 @@ class VADConfig:
             raise ValueError("Maximum segment must exceed onset duration")
         if self.onset_rms <= 0 or self.offset_rms <= 0:
             raise ValueError("VAD thresholds must be positive")
+        if self.noise_floor_ms < 100 or self.noise_floor_ms > 5000:
+            raise ValueError("noise_floor_ms must be within [100, 5000]")
+        if not (1.0 <= self.offset_multiplier <= self.onset_multiplier <= 8.0):
+            raise ValueError("VAD multipliers must satisfy 1 <= offset <= onset <= 8")
         if self.offset_rms > self.onset_rms:
             raise ValueError("offset_rms must be <= onset_rms for hysteresis to work")
         if self.sample_rate <= 0:
@@ -149,10 +157,21 @@ class EnergyVAD:
         frame = frame.copy()
         level = rms(frame)
         self.last_rms = level
-        is_speech = level >= (
-            self.config.onset_rms if self.state is VADState.SILENCE else self.config.offset_rms
-        )
-        size = frame.size
+        # Adapt only while quiet, so speech cannot train the floor upward. The
+        # bounded clamp preserves the legacy thresholds in clean/noisy extremes.
+        if self.config.adaptive and self.state is VADState.SILENCE and level <= self.config.onset_rms:
+            alpha = min(0.25, size / max(1, self.config.sample_rate * self.config.noise_floor_ms / 1000))
+            self.noise_floor = float(np.clip((1.0 - alpha) * self.noise_floor + alpha * level, 1e-5, self.config.onset_rms))
+            self._noise_samples = min(self._noise_samples + size, self.config.sample_rate * self.config.noise_floor_ms // 1000)
+        if self.config.adaptive and self._noise_samples:
+            onset = float(np.clip(self.noise_floor * self.config.onset_multiplier,
+                                  self.config.onset_rms * 0.55, self.config.onset_rms * 1.5))
+            offset = float(np.clip(self.noise_floor * self.config.offset_multiplier,
+                                   self.config.offset_rms * 0.55, self.config.offset_rms * 1.5))
+            offset = min(offset, onset)
+        else:
+            onset, offset = self.config.onset_rms, self.config.offset_rms
+        is_speech = level >= (onset if self.state is VADState.SILENCE else offset)
         events: List[VADEvent] = []
 
         if self.state is VADState.SILENCE:

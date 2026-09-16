@@ -81,6 +81,10 @@ class AudioCapture:
         self.stats: Dict[str, float] = {
             "chunks": 0,
             "dropped_chunks": 0,
+            "dropped_audio_seconds": 0.0,
+            "queue_overflow_events": 0,
+            "discontinuities": 0,
+            "vad_dropouts": 0,
             "speech_chunks": 0,
             "audio_seconds": 0.0,
             "speech_seconds": 0.0,
@@ -215,6 +219,8 @@ class AudioCapture:
         except queue.Full:
             self._discontinuity.set()
             self._dropped_chunks += 1
+            self.stats["dropped_audio_seconds"] += block.size / float(self.config.sample_rate)
+            self.stats["queue_overflow_events"] += 1
             if not self._warned_drop:
                 self._warned_drop = True
                 logger.warning("audio queue full (%d); dropping blocks until it drains", self._queue.maxsize)
@@ -274,6 +280,7 @@ class AudioCapture:
         finally:
             try:
                 if self._discontinuity.is_set():
+                    self.stats["discontinuities"] += 1
                     self.vad.reset()
                     if self.on_discontinuity:
                         self.on_discontinuity()

@@ -22,8 +22,8 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.0.nemo"
-DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.0"
+DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.5.nemo"
+DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.5"
 
 
 class OutputMode(str, Enum):
@@ -131,6 +131,10 @@ class AudioConfig:
     vad_min_silence_ms: int = 700
     vad_pre_speech_ms: int = 320
     vad_max_speech_s: float = 20.0
+    vad_adaptive: bool = True
+    vad_noise_floor_ms: int = 800
+    vad_onset_multiplier: float = 3.0
+    vad_offset_multiplier: float = 1.6
 
     # Bounded capture queue: oldest chunk is dropped when the consumer stalls
     queue_max_chunks: int = 32
@@ -310,7 +314,7 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
         config.asr.device = device
     decoder = _env("SHENAVA_DECODER")
     if decoder:
-        config.asr.decoder_type = decoder
+        config.asr.decoder_type = decoder.lower()
     config.asr.num_threads = _env_int("SHENAVA_NUM_THREADS", config.asr.num_threads)
     config.asr.partial_interval_s = _env_float(
         "SHENAVA_PARTIAL_INTERVAL_S", config.asr.partial_interval_s
@@ -318,6 +322,7 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
     config.asr.allow_download = _env_bool("SHENAVA_ALLOW_DOWNLOAD", config.asr.allow_download)
     config.asr.require_streaming = _env_bool("SHENAVA_REQUIRE_STREAMING", config.asr.require_streaming)
     config.asr.right_context = _env_int("SHENAVA_RIGHT_CONTEXT", config.asr.right_context)
+    config.audio.vad_adaptive = _env_bool("SHENAVA_ADAPTIVE_VAD", config.audio.vad_adaptive)
     second_pass = _env("SHENAVA_SECOND_PASS")
     if second_pass:
         config.asr.second_pass = second_pass.strip().lower()

@@ -110,7 +110,7 @@ class CTCBeamDecoder:
             for (seq, last), logp in states.items():
                 # Emit blank: sequence unchanged.
                 key = (seq, blank)
-                next_states[key] = max(next_states.get(key, -np.inf), logp + row[blank])
+                next_states[key] = float(np.logaddexp(next_states.get(key, -np.inf), logp + row[blank]))
                 # Emit each non-blank token.
                 for v in range(row.shape[0]):
                     if v == blank:
@@ -119,9 +119,9 @@ class CTCBeamDecoder:
                     # The bias keys on the prefix *before* this token.
                     boost = token_bias(seq, v) if token_bias is not None else 0.0
                     key = (new_seq, v)
-                    next_states[key] = max(
+                    next_states[key] = float(np.logaddexp(
                         next_states.get(key, -np.inf), logp + row[v] + boost
-                    )
+                    ))
             states = self._prune(next_states)
             if not states:
                 break
@@ -131,16 +131,15 @@ class CTCBeamDecoder:
         })
         return list(sequences[0]), float(best_logp)
 
-    @staticmethod
-    def _prune(states: dict[tuple[tuple[int, ...], int], float]) -> dict:
-        if len(states) <= 2 * 64:
-            return states
-        # Keep the strongest state per sequence, then keep the best sequences.
+    def _prune(self, states: dict[tuple[tuple[int, ...], int], float]) -> dict:
+        # The configured beam is the actual bound.  Keeping a hidden 64-wide
+        # beam made small benchmark beams misleading and unbounded in practice.
         by_seq: dict[tuple[int, ...], tuple[int, float]] = {}
         for (seq, last), logp in states.items():
-            if seq not in by_seq or logp > by_seq[seq][1]:
+            previous = by_seq.get(seq)
+            if previous is None or logp > previous[1]:
                 by_seq[seq] = (last, logp)
-        ranked = sorted(by_seq.items(), key=lambda kv: (-kv[1][1], kv[0]))[: 2 * 64]
+        ranked = sorted(by_seq.items(), key=lambda kv: (-kv[1][1], kv[0]))[: self.beam_size]
         return {(seq, last): logp for seq, (last, logp) in ranked}
 
 

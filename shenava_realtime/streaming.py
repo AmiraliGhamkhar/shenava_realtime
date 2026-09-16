@@ -192,6 +192,8 @@ def make_second_pass(
     if config.second_pass == "off":
         return None
     if config.second_pass == "context":
+        if getattr(config, "decoder_type", "ctc") == "rnnt":
+            raise RuntimeError('second_pass="context" is not implemented for RNNT; use "greedy" for the native RNNT endpoint pass')
         # A specifically requested capability that is absent is a startup
         # error, never a silent degrade to streaming-only decoding.
         factory = getattr(backend, "build_second_pass", None)
