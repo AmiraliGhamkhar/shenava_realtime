@@ -3,9 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 from .aho_corasick import AhoCorasickMatcher
+
+# Hard bound for the optional decoder-bias metadata below.  Kept small on
+# purpose: a log-prob boost of 1.5 is already e^1.5 ~ 4.5x, enough to tip a
+# near-tie without turning unrelated words into medical terms.
+MAX_HOTWORD_BIAS = 1.5
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,10 @@ class TerminologyRule:
     laterality_sensitive: bool = False
     number_sensitive: bool = False
     enabled: bool = True
+    # Decoder-bias override (see hotwords.py): None = category default,
+    # 0 = never boosted, >0 = an explicitly reviewed boost for a category
+    # that is not boosted by default (e.g. a rare anatomy term).
+    bias: Optional[float] = None
 
 
 _DEFAULT_DATA = Path(__file__).with_name("data") / "terminology.json"
@@ -42,6 +51,13 @@ def load_rules(path: str | Path = _DEFAULT_DATA) -> list[TerminologyRule]:
         rule = TerminologyRule(**item)
         if rule.risk not in {"low", "medium", "high"} or not rule.id or not rule.canonical:
             raise ValueError(f"invalid terminology rule: {rule.id!r}")
+        if rule.bias is not None:
+            if isinstance(rule.bias, bool) or not isinstance(rule.bias, (int, float)) \
+                    or not 0.0 <= float(rule.bias) <= MAX_HOTWORD_BIAS:
+                raise ValueError(
+                    f"terminology rule {rule.id!r}: bias must be null or within "
+                    f"[0, {MAX_HOTWORD_BIAS}]"
+                )
         rules.append(rule)
     return rules
 

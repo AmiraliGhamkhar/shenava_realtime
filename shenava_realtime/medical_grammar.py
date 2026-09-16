@@ -7,6 +7,7 @@ from .aho_corasick import AhoCorasickMatcher
 from .lexicon import UNITS
 from .spans import ClinicalSpan, MeasurementSpan, MedicationSpan, NumberSpan, TextSpan
 from .text_normalize import match_key
+from .value_validation import bp_plausible
 
 
 # Explicit vital-sign keywords: "نبض 72 در دقیقه" -> 72 bpm.  The keyword is
@@ -53,7 +54,7 @@ class MeasurementGrammar:
             if re.fullmatch(r"\s*(?:روی|بر\s+روی|خط)\s*", connector):
                 if isinstance(left.value, (int, float)) and isinstance(right.value, (int, float)):
                     s, d = int(left.value), int(right.value)
-                    if 60 <= s <= 260 and 30 <= d <= 160 and s > d:
+                    if bp_plausible(s, d):
                         results.append(MeasurementSpan(text[left.start:right.end], f"{s}/{d}",
                             "mmHg", left.start, right.end, "blood_pressure", True, s, d))
         # Prefer BP/longer spans over component measurements.

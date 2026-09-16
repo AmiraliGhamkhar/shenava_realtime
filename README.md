@@ -29,7 +29,9 @@ pytest -q
 python main.py --self-test
 ```
 
-The core/test dependencies are NumPy and pytest. The self-test uses **synthetic
+The core/test dependencies are NumPy and pytest (`requirements-dev.txt`;
+`requirements.txt` is a full-stack aggregate of all three files). The
+self-test uses **synthetic
 speech activity and a synthetic ASR backend**, but real capture/VAD orchestration,
 ASR worker, stabilization, normalization and extraction. It does not measure
 recognition accuracy or test a microphone.
@@ -142,9 +144,11 @@ launcher for detached desktop use; prefer the foreground command while debugging
     has `transcribe`);
   - `context` — CTC beam search over the model's own emissions with decoder-time
     **hotword biasing** built from the reviewed terminology rules (no second
-    dictionary; unit/anatomy categories are never boosted; biases are small
-    log-prob prefixes, bounded by `hotword_max`, restricted to a specialty with
-    `--hotword-specialty` / `SHENAVA_HOTWORD_SPECIALTY`). Requires the NeMo
+    dictionary; biases are small log-prob prefixes capped at 1.5 by category —
+    the list is bounded to `hotword_max` phrases, restricted to a specialty
+    with `--hotword-specialty` / `SHENAVA_HOTWORD_SPECIALTY`; units are never
+    boosted, and categories without a default boost, such as anatomy, join
+    only through an explicit reviewed `bias` on the rule). Requires the NeMo
     backend's emissions/tokenizer capability — a missing capability is a
     startup error, and a decode failure keeps the streaming text, counts a
     fallback, and never switches modes silently.
@@ -237,7 +241,8 @@ normalized ASR → token offsets / protected spans
 
 Reviewed structured rules live in `shenava_realtime/data/terminology.json`; each
 has an ID, canonical form, explicit spoken/alias/phonetic forms, category,
-specialty, priority, risk and context/sensitivity flags. `terminology.py`
+specialty, priority, risk and context/sensitivity flags, plus the optional
+bounded `bias` used only for decoder hotword biasing. `terminology.py`
 validates this schema. `aho_corasick.py` is a dependency-free matcher abstraction,
 `span_resolver.py` owns selection policy, `number_grammar.py` preserves semantic
 number offsets, and `medical_grammar.py` contains measurement, medication and

@@ -1,0 +1,4 @@
+# Core + test dependencies for the deterministic pipeline (no ASR model stack).
+# The lightweight suite and ``python main.py --self-test`` need only these.
+numpy
+pytest

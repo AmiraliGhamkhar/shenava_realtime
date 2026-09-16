@@ -71,3 +71,65 @@ def test_invalid_limits_rejected():
         build_hotwords(RULES, max_hotwords=0)
     with pytest.raises(ValueError):
         build_hotwords(RULES, max_hotwords=513)
+
+
+# --------------------------------------------------------------------------- #
+# Minimal per-rule bias metadata: the reviewer-justified exception path.
+# --------------------------------------------------------------------------- #
+def test_explicit_bias_opts_an_unboosted_category_in():
+    # Anatomy has no default boost, but a rare reviewed term may carry a
+    # bounded explicit bias — the requirement's "anatomy" support.
+    anatomy = TerminologyRule("anat.heart", "میوکارد", ("میوکارد",), category="anatomy",
+                              specialty="general", priority=85, bias=0.5)
+    hotwords = build_hotwords([anatomy])
+    assert [(h.phrase, h.bias) for h in hotwords] == [("میوکارد", 0.5)]
+
+
+def test_zero_bias_suppresses_a_boost_and_units_are_never_boosted():
+    suppressed = TerminologyRule("drug.x", "شیاف", ("شیاف",), category="medication",
+                                 specialty="general", priority=80, bias=0.0)
+    unit = TerminologyRule("unit.pct", "%", ("درصد",), category="unit",
+                           specialty="general", priority=99, bias=1.0)
+    assert build_hotwords([suppressed]) == []
+    assert build_hotwords([unit]) == []
+
+
+def test_default_rules_declare_no_bias_and_keep_category_defaults():
+    # No shipped rule opts out of (or past) its category default: the reviewed
+    # data stays conservative until an explicit review says otherwise.
+    from shenava_realtime.terminology import default_rules
+    rules = default_rules()
+    assert all(rule.bias is None for rule in rules)
+    expected = {
+        (form, min(BIAS_BY_CATEGORY[rule.category], MAX_BIAS))
+        for rule in rules
+        if rule.category in BIAS_BY_CATEGORY and rule.specialty == "general"
+        for form in rule.spoken_forms
+    }
+    got = {(h.phrase, h.bias) for h in build_hotwords(rules)}
+    assert got and got <= expected
+
+
+def test_load_rules_bounds_the_bias_field(tmp_path):
+    import json
+    import pytest
+    from shenava_realtime.terminology import load_rules
+
+    def write(payload):
+        path = tmp_path / "terminology.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    good = {"schema_version": 1, "rules": [{
+        "id": "t.1", "canonical": "CABG", "spoken_forms": ["سی ای بی جی"],
+        "category": "abbreviation", "bias": 1.5}]}
+    assert load_rules(write(good))[0].bias == 1.5
+    for bad in (1.51, -0.1, True, "strong"):
+        payload = json.loads(json.dumps(good))
+        payload["rules"][0]["bias"] = bad
+        with pytest.raises(ValueError, match="bias"):
+            load_rules(write(payload))
+    # An absent key stays the category default (None).
+    payload = json.loads(json.dumps(good))
+    del payload["rules"][0]["bias"]
+    assert load_rules(write(payload))[0].bias is None

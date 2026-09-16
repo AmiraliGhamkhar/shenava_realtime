@@ -2,8 +2,10 @@
 
 All scenarios are deterministic synthetic envelopes (bounded overlap audio,
 mono float32, 16 kHz).  They pin the hysteresis behaviour: short phrases,
-continuous dictation, short/long pauses, low volume, noise floors and the
-segment-cap cut.  No denoising happens here — the VAD only gates segments.
+continuous dictation, short/long pauses, low volume, noise floors, the
+segment-cap cut, and boundary behaviour for utterances that must not be
+chopped mid-phrase (spoken number pairs, medication/dose expressions).  No
+denoising happens here — the VAD only gates segments.
 """
 import numpy as np
 import pytest
@@ -217,3 +219,73 @@ def test_incomplete_utterance_is_closed_by_flush():
     events = vad.flush()
     ends = [e for e in events if e.type == EventType.SPEECH_END]
     assert len(ends) == 1 and ends[0].audio.size > 0 and not ends[0].forced
+
+
+# --------------------------------------------------------------------------- #
+# Boundary behavior for content that must not be split: spoken numbers and
+# medication/dose phrases.  The VAD itself is content-blind (energy only);
+# these scenarios pin that hesitations inside such a phrase stay under
+# min_silence_ms (one segment) and that a real pause yields two bounded,
+# self-contained segments that are never joined.
+# --------------------------------------------------------------------------- #
+def test_spoken_number_phrase_stays_in_one_segment_across_a_short_pause():
+    # A hesitation of 0.35 s inside "۱۲۰ روی ۸۰" must not cut the BP pair
+    # into two independent values: the phrase reaches one natural endpoint.
+    events = run_vad(blocks_of(
+        speech_seconds(1.1, 0.05, seed=31),
+        silence_seconds(0.35),
+        speech_seconds(1.1, 0.05, seed=32),
+        silence_seconds(1.5),
+    ))
+    segs = segments(events)
+    assert len(segs) == 1 and not segs[0].forced
+    assert 2.5 < segs[0].duration_s <= 2.55 + 0.32 + 0.768
+
+
+def test_number_phrase_split_by_a_long_pause_yields_two_bounded_segments():
+    events = run_vad(blocks_of(
+        speech_seconds(1.1, 0.05, seed=33),
+        silence_seconds(1.0),           # >= min_silence_ms: a real boundary
+        speech_seconds(1.1, 0.05, seed=34),
+        silence_seconds(1.5),
+    ))
+    segs = segments(events)
+    assert [s.forced for s in segs] == [False, False]
+    # Audio is never joined across the silence: each segment is bounded.
+    assert all(s.audio.size < int(2.5 * SAMPLE_RATE) for s in segs)
+
+
+def test_medication_dose_phrase_survives_hesitations_and_syllable_dips():
+    # "متفورمین پانصد میلی گرم" delivered in bursts with a 0.45 s hesitation:
+    # every dip stays above the offset threshold inside the open segment, so
+    # drug, amount and unit reach the parser together.
+    events = run_vad(blocks_of(
+        speech_seconds(0.9, 0.05, seed=35, syllable_hz=7.0),
+        silence_seconds(0.45),
+        speech_seconds(1.0, 0.05, seed=36, syllable_hz=7.0),
+        silence_seconds(0.3),
+        speech_seconds(0.9, 0.05, seed=37, syllable_hz=7.0),
+        silence_seconds(1.5),
+    ))
+    segs = segments(events)
+    assert len(segs) == 1 and not segs[0].forced
+    assert 3.5 < segs[0].duration_s <= 3.55 + 0.32 + 0.768
+
+
+def test_low_volume_number_utterance_with_tuned_vad_reaches_the_parser_whole():
+    # Measured-tuning path: a quiet speaker captured with an explicitly lower
+    # onset threshold keeps the number phrase intact, and the natural
+    # endpoint commits the parsed value exactly once.
+    from tests.fakes import make_pipeline
+
+    tuned = VADConfig(onset_rms=0.010, offset_rms=0.006)
+    events = run_vad(blocks_of(speech_seconds(2.0, 0.012, seed=8),
+                               silence_seconds(1.5)), config=tuned)
+    segs = segments(events)
+    assert len(segs) == 1 and not segs[0].forced
+    pipeline, _ = make_pipeline(["فشار خون صد و بیست روی هشتاد"])
+    pipeline.start_utterance(segs[0].audio)
+    deltas = pipeline.end_utterance()
+    assert "".join(deltas) == "BP 120/80"
+    assert "numeric_value" in pipeline.last_review_reasons
+    assert "forced_boundary" not in pipeline.last_review_reasons

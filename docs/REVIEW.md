@@ -154,3 +154,42 @@ deterministic NumPy module over the model's own emissions and BPE vocabulary.
   attempt failed earlier with a TLS/network error). Those paths are covered by
   the tensor/model doubles and the headless WAV-replay test against a labelled
   fake backend.
+
+## Fourth-pass review: audit against the accuracy/robustness mandate
+
+Re-audited every item of the mandate against the actual implementation. The
+streaming foundation (cache handoff, flush accounting, context gating), the
+frontend parity tests, the second-pass/hotword layer, forced-boundary
+protections, review reasons, the evaluator and the output/persistence
+contracts were verified in code and tests; the defects below were the gaps
+this pass fixes.
+
+| Finding | Change |
+|---|---|
+| The persisted-record plausibility check (`clinical._record_review_reasons`) had drifted from the pipeline's `value_validation.py`: body temperature 25–45 vs the documented 24–45 °C, 77–113 vs 75–113 °F, and a `suspicious_value:nonpositive=` label that the reason vocabulary does not define; non-dose units were flagged for any non-positive value while the pipeline judged none | Clinical records now call `value_validation.plausibility_reason()`/`bp_plausible()` — the same ranges, the same `suspicious_value:<kind>=<value>` labels. The BP pair gate, previously spelled out four times (`fa_numbers`, `medical_grammar`, `value_validation`, `clinical`), is the single `bp_plausible()` |
+| The README (and the two `asr_backend` error messages) named `requirements-dev.txt` / `requirements-asr.txt` / `requirements-desktop.txt` and pinned NeMo 2.4.0 + Torch/torchaudio 2.7.1, but only an unpinned combined `requirements.txt` existed | The split files exist again with exactly what the README describes; `requirements.txt` is a full-stack aggregate of the three. No new dependency was introduced |
+| Hotword biasing could not express the mandate's per-rule, review-justified exception (e.g. a rare anatomy term) and the anatomy category was hard-excluded | `TerminologyRule` gains the minimal metadata field for decoder biasing: optional `bias`, schema-validated to `[0, 1.5]` (`0` = suppress a category default; untokenizable forms were already skipped). Units remain never-boosted; every other category keeps its conservative default, and categories without one (anatomy, disease-less groups) appear only via an explicit reviewed value. Shipped `terminology.json` sets no overrides — existing boost behaviour is byte-identical, now pinned by a test |
+| VAD boundary coverage had no scenario for speech containing numbers or medication names (mandate §3) | `tests/test_vad_scenarios.py`: a spoken BP pair and a medication/dose phrase with short hesitations stay in exactly one segment; a long pause yields two bounded, unjoined segments; a tuned low-volume capture flows end-to-end and the natural endpoint commits `BP 120/80` once |
+| `audio_diagnostics.crest_factor()` returned `False` or the ratio (annotation said `float`) | Returns `0.0` when the ratio is not finite |
+
+`PostProcessor.last_result.review_reasons` semantics are unchanged: this pass
+touched no rewriting path; only the *reasons attached to persisted records* can
+differ (the drifted bounds and the unknown `nonpositive` label are gone, and
+non-dose negative values are no longer judged in one layer but not the other).
+
+## Checks executed in the fourth pass
+
+- Before changes: `.venv/bin/pytest -q` — 382 passed; `main.py --self-test`
+  exit 0; evaluator 33 rows, all post-processing metrics 0.
+- After changes: `.venv/bin/pytest -q` — 394 passed (12 new tests: bias
+  metadata + schema bounds, hotword opt-in/suppression, shared-range pin for
+  clinical records, BP gate, VAD number/medication boundaries, clinical
+  persistence opt-in); `main.py --self-test` exit 0 unchanged; evaluator
+  output unchanged (post WER/CER 0, forced-boundary 0, essential 0).
+- Gates: WAV replay verified through `tests/test_wav_replay.py` (real PCM16
+  WAV through the replay path, labelled fake backend); `[70,13]` and the
+  lower contexts `6/1/0` are pinned by the encoder-metadata tests and the
+  config/CLI rejection path; `--second-pass off` and the missing-capability
+  startup error are pinned in `tests/test_second_pass.py`. Real NeMo
+  checkpoint execution remains impossible here (weights/NeMo absent) and is
+  still declared unverified below.

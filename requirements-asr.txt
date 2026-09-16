@@ -1,0 +1,8 @@
+# Real recognition stack. The native adapter targets NeMo 2.4.0; the matching
+# Torch/torchaudio 2.7.1 pair is pinned so the cache-aware stream API used by
+# native_stream.py is the version it was checked against.
+# Availability of NeMo compiled dependencies on native Windows varies; use a
+# supported Linux/CUDA or CPU environment.
+nemo_toolkit[asr]==2.4.0
+torch==2.7.1
+torchaudio==2.7.1
