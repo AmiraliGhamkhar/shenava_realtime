@@ -197,7 +197,9 @@ class ShenavaApp:
             self.overlay.update_text(self.asr.pipeline.committed_text, confidence)
 
     def _on_utterance_end(self, text: str, confidence: float) -> None:
-        if self.clinical and not self.clinical.submit(text):
+        if self.clinical and not self.clinical.submit(
+            text, review_reasons=self.asr.last_review_reasons
+        ):
             logger.error("Completed utterance was not accepted by clinical output")
         if self.overlay is not None:
             self.overlay.update_text(text, confidence)
@@ -248,6 +250,10 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument("--clinical-sqlite", help="optional SQLite output file")
     parser.add_argument("--clinical-jsonl", help="optional JSONL output file")
     parser.add_argument("--right-context", type=int, choices=[0, 1, 6, 13])
+    parser.add_argument("--second-pass", choices=["off", "greedy", "context"],
+                        help="utterance-end second-pass decoder (natural endpoints only)")
+    parser.add_argument("--hotword-specialty", default=None,
+                        help="restrict decoder hotwords to one specialty (plus general terms)")
     parser.add_argument("--require-streaming", action="store_true")
     parser.add_argument("--allow-download", action="store_true", help="explicitly permit model provisioning over network")
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
@@ -291,6 +297,10 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         config.clinical_jsonl = args.clinical_jsonl
     if args.right_context is not None:
         config.asr.right_context = args.right_context
+    if args.second_pass:
+        config.asr.second_pass = args.second_pass
+    if args.hotword_specialty:
+        config.asr.hotword_specialty = args.hotword_specialty
     if args.allow_download:
         config.asr.allow_download = True
     if args.require_streaming:

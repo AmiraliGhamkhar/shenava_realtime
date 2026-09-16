@@ -1,6 +1,33 @@
 {"raw":"سی تی آنژیوگرافی انجام شد","reference":"CT آنژیوگرافی انجام شد","entities":[{"type":"term","text":"CT آنژیوگرافی"}]}
-{"raw":"متفورمین پانصد میلی گرم روزی دو بار","reference":"متفورمین 500 mg روزی 2 بار","entities":[{"type":"medication","text":"متفورمین"},{"type":"number","text":"500"},{"type":"unit","text":"mg"},{"type":"number","text":"2"}]}
+{"raw":"متفورمین پانصد میلی گرم روزی دو بار","reference":"متفورمین 500 mg روزی 2 بار","entities":[{"type":"medication","text":"متفورمین"},{"type":"number","text":"500"},{"type":"unit","text":"mg"},{"type":"number","text":"2"},{"type":"dose","text":"500 mg"}]}
 {"raw":"فشار خون صد و بیست روی هشتاد","reference":"BP 120/80","entities":[{"type":"term","text":"BP"},{"type":"number","text":"120"},{"type":"number","text":"80"},{"type":"unit","text":"mmHg"}]}
 {"raw":"تب ندارد و زانو راست درد دارد","reference":"تب ندارد و زانو راست درد دارد","entities":[{"type":"negation","text":"تب"},{"type":"laterality","text":"right"}]}
 {"raw":"اشباع اکسیژن نود و هشت درصد","reference":"SpO2 98%","entities":[{"type":"term","text":"SpO2"},{"type":"number","text":"98"},{"type":"unit","text":"%"}]}
 {"raw":"متن ناشناخته باید بدون تغییر بماند","reference":"متن ناشناخته باید بدون تغییر بماند","entities":[]}
+{"raw":"کابج برای بیمار انجام شد","reference":"CABG برای بیمار انجام شد","entities":[{"type":"term","text":"CABG"}]}
+{"raw":"بیمار EKG مثبت بود","reference":"بیمار EKG مثبت بود","entities":[]}
+{"raw":"بیمار MRI و CT اسکن داشت","reference":"بیمار MRI و CT اسکن داشت","entities":[]}
+{"raw":"بیمار تحت پی سی آی با EKG","reference":"بیمار تحت PCI با EKG","entities":[{"type":"term","text":"PCI"}]}
+{"raw":"آسپرین صد و بیست و پنج میلی گرم خوراکی","reference":"آسپرین 125 mg خوراکی","entities":[{"type":"medication","text":"آسپرین"},{"type":"number","text":"125"},{"type":"unit","text":"mg"},{"type":"dose","text":"125 mg"}]}
+{"raw":"انسولین پنجاه واحد انسولین روزی یک بار","reference":"انسولین 50 U insulin روزی 1 بار","entities":[{"type":"medication","text":"انسولین"},{"type":"dose","text":"50 U insulin"}]}
+{"raw":"متفورمین پانصد ملی گرم","reference":"متفورمین 500 ملی g","entities":[{"type":"medication","text":"متفورمین"},{"type":"number","text":"500"}]}
+{"raw":"ساتوراسیون نود و سه درصد","reference":"SpO2 93%","entities":[{"type":"term","text":"SpO2"},{"type":"number","text":"93"},{"type":"unit","text":"%"}]}
+{"raw":"اشباع اکسیژن صد و دو درصد","reference":"SpO2 102%","entities":[{"type":"term","text":"SpO2"},{"type":"number","text":"102"},{"type":"unit","text":"%"}]}
+{"raw":"نبض هفتاد و دو در دقیقه","reference":"نبض 72 bpm","entities":[{"type":"number","text":"72"},{"type":"unit","text":"bpm"}]}
+{"raw":"نفس سی در دقیقه","reference":"نفس 30 rpm","entities":[{"type":"number","text":"30"},{"type":"unit","text":"rpm"}]}
+{"raw":"ضربان قلب نود و دو در دقیقه","reference":"ضربان قلب 92 bpm","entities":[{"type":"number","text":"92"},{"type":"unit","text":"bpm"}]}
+{"raw":"دمای بدن سی و هشت و نیم درجه","reference":"دمای بدن 38.5°","entities":[{"type":"number","text":"38.5"},{"type":"unit","text":"°"}]}
+{"raw":"وازوپرسین بیست و پنج میلی گرم در کیلو گرم","reference":"وازوپرسین 25 mg/kg","entities":[{"type":"number","text":"25"},{"type":"unit","text":"mg/kg"}]}
+{"raw":"درد زانو چپ بدون تب","reference":"درد زانو چپ بدون تب","entities":[{"type":"negation","text":"تب"},{"type":"laterality","text":"left"}]}
+{"raw":"هر دو زانو درد دارد","reference":"هر دو زانو درد دارد","entities":[{"type":"laterality","text":"bilateral"}]}
+{"raw":"اکو کاردیوگرافی طبیعی بود","reference":"اکوکاردیوگرافی طبیعی بود","entities":[{"type":"term","text":"اکوکاردیوگرافی"}]}
+{"raw":"ام آر آی مغز طبیعی بود","reference":"MRI مغز طبیعی بود","entities":[{"type":"term","text":"MRI"}]}
+{"raw":"سی تی اسکن مغز انجام شد","reference":"CT مغز انجام شد","entities":[{"type":"term","text":"CT"}]}
+{"raw":"نارسایی احتقانی قلب با EKG","reference":"CHF با EKG","entities":[{"type":"term","text":"CHF"}]}
+{"raw":"بیمار به آی سی یو منتقل شد","reference":"بیمار به ICU منتقل شد","entities":[{"type":"term","text":"ICU"}]}
+{"raw":"قند خون ناشتا سیزده","reference":"FBS 13","entities":[{"type":"term","text":"FBS"},{"type":"number","text":"13"}]}
+{"raw":"بیست قطره در دقیقه","reference":"20 gtt/min","entities":[{"type":"number","text":"20"},{"type":"unit","text":"gtt/min"}]}
+{"raw":"تاریخ 1402/01/15 ثبت شد","reference":"تاریخ 1402/01/15 ثبت شد","entities":[]}
+{"raw":"بیمار دوز سی و","reference":"بیمار دوز سی و","forced":true,"entities":[]}
+{"raw":"فشار خون صد و","reference":"BP صد و","forced":true,"entities":[]}
+{"raw":"متفورمین سی و","reference":"متفورمین سی و","forced":true,"entities":[]}

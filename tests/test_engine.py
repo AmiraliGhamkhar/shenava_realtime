@@ -190,3 +190,73 @@ def test_forced_vad_split_does_not_complete_a_number_phrase():
     assert "30" not in transcript and " 5" not in transcript
     assert "سی و" in transcript and "پنج" in transcript
     assert engine.stats.get("forced_splits") == 1
+
+
+class IncompleteStream:
+    """Streaming double that truncates the tail; the offline pass completes it."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.audio = np.zeros(0, dtype=np.float32)
+
+    def push(self, audio):
+        samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+        self.audio = np.concatenate([self.audio, samples]) if self.audio.size else samples.copy()
+        return "بیمار عمل", 0.0
+
+    def finalize(self):
+        return "بیمار عمل", 0.0
+
+
+def test_second_pass_rewrites_final_text_and_flags_disagreement():
+    config = AppConfig()
+    config.audio.queue_max_chunks = 128
+    config.save_transcripts = False
+    config.asr.second_pass = "greedy"
+    capture = FakeAudioCapture()
+    backend = FakeBackend(
+        RecordingTranscriber(lambda seconds: "بیمار تحت عمل کابج"))
+    backend.create_stream = IncompleteStream
+    engine = RealtimeASR(config, backend=backend, audio_capture=capture)
+    utterances: list[str] = []
+    engine.on_utterance_end = lambda text, confidence: utterances.append(text)
+    engine.start()
+    try:
+        capture.emit_utterance(blocks(1.5))
+        assert wait_for(lambda: len(utterances) == 1)
+    finally:
+        engine.stop()
+
+    # The offline second pass completes the truncated streaming tail, and the
+    # disagreement is a structured, visible review reason.
+    assert utterances == ["بیمار تحت عمل CABG"]
+    assert "decoder_disagreement" in engine.last_review_reasons
+    stats = engine.get_statistics()
+    assert stats["second_pass"] == "greedy"
+    assert stats["second_pass_stats"]["rewrites"] == 1
+    assert stats["second_pass_stats"]["fallbacks"] == 0
+
+
+def test_second_pass_off_keeps_streaming_text():
+    config = AppConfig()
+    config.audio.queue_max_chunks = 128
+    config.save_transcripts = False
+    config.asr.second_pass = "off"
+    capture = FakeAudioCapture()
+    backend = FakeBackend(
+        RecordingTranscriber(lambda seconds: "بیمار تحت عمل کابج"))
+    backend.create_stream = IncompleteStream
+    engine = RealtimeASR(config, backend=backend, audio_capture=capture)
+    utterances: list[str] = []
+    engine.on_utterance_end = lambda text, confidence: utterances.append(text)
+    engine.start()
+    try:
+        capture.emit_utterance(blocks(1.5))
+        assert wait_for(lambda: len(utterances) == 1)
+    finally:
+        engine.stop()
+
+    assert utterances == ["بیمار عمل"]
+    assert engine.last_review_reasons == []
+    assert engine.get_statistics()["second_pass"] == "off"

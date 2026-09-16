@@ -26,6 +26,7 @@ try:  # pragma: no cover - optional at import time so tests run without it
 except (ImportError, OSError):  # pragma: no cover
     sd = None
 
+from .audio_diagnostics import analyze_segment, format_summary, to_dict
 from .config import AudioConfig
 from .vad import EnergyVAD, EventType, VADEvent, VADConfig, VADState
 
@@ -85,6 +86,7 @@ class AudioCapture:
             "speech_seconds": 0.0,
             "segments": 0,
         }
+        self._last_diagnostics = None
 
     # ------------------------------------------------------------------ #
     @property
@@ -385,6 +387,18 @@ class AudioCapture:
                 event.duration_s,
                 ", forced segment cut" if event.forced else "",
             )
+            if event.audio is not None and event.audio.size:
+                # Diagnostics are metrics only: levels are logged and counted,
+                # never used to alter the transcript.
+                diagnostics = analyze_segment(
+                    event.audio, low_rms=max(1e-4, self.config.vad_onset_rms * 0.75)
+                )
+                logger.info("segment audio: %s", format_summary(diagnostics))
+                self._last_diagnostics = diagnostics
+                if diagnostics.level == "clipped":
+                    self.stats["clipped_segments"] = self.stats.get("clipped_segments", 0) + 1
+                elif diagnostics.level == "low":
+                    self.stats["low_level_segments"] = self.stats.get("low_level_segments", 0) + 1
             if self.on_speech_end is not None:
                 try:
                     self.on_speech_end(event.duration_s, event.forced)
@@ -397,6 +411,8 @@ class AudioCapture:
         stats["dropped_chunks"] = self._dropped_chunks
         stats["vad_state"] = self.vad.state.value
         stats["last_error"] = self.last_error or ""
+        if self._last_diagnostics is not None:
+            stats["last_segment"] = to_dict(self._last_diagnostics)
         return stats
 
     @staticmethod

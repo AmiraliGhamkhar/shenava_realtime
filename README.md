@@ -81,6 +81,10 @@ python main.py --model /models/shenava-koochik-v1.0.nemo --device cpu
 # Strict native-streaming mode (recommended for deployment validation):
 python main.py --model /models/shenava-koochik-v1.0.nemo --require-streaming \
   --right-context 13 --output-mode console --no-overlay --no-inject
+# Disable (or restrict) the utterance-end second-pass decoder:
+python main.py --model /models/shenava-koochik-v1.0.nemo --second-pass off
+python main.py --model /models/shenava-koochik-v1.0.nemo \
+  --second-pass context --hotword-specialty cardiology
 python main.py --list-devices
 ```
 
@@ -127,11 +131,40 @@ launcher for detached desktop use; prefer the foreground command while debugging
 - Unsupported/offline checkpoints use **endpoint-only CTC**, once per segment,
   with an explicit startup warning. `require_streaming=true` rejects this mode.
   A broken native adapter does not silently fall back.
+- **Utterance-end second pass** (config `asr.second_pass`; CLI `--second-pass`;
+  env `SHENAVA_SECOND_PASS`). Live streaming greedy stays the primary path; the
+  second pass runs only at **natural** endpoints (never on forced cuts), only
+  for utterances of at least `second_pass_min_utterance_s` (0.5 s), and only in
+  endpoint-commit mode:
+  - `off` — streaming greedy only (fully disables the pass and its hotwords);
+  - `greedy` (default) — one offline greedy re-decode of the same segment with
+    the same model/BPE vocabulary and full context (works with any backend that
+    has `transcribe`);
+  - `context` — CTC beam search over the model's own emissions with decoder-time
+    **hotword biasing** built from the reviewed terminology rules (no second
+    dictionary; unit/anatomy categories are never boosted; biases are small
+    log-prob prefixes, bounded by `hotword_max`, restricted to a specialty with
+    `--hotword-specialty` / `SHENAVA_HOTWORD_SPECIALTY`). Requires the NeMo
+    backend's emissions/tokenizer capability — a missing capability is a
+    startup error, and a decode failure keeps the streaming text, counts a
+    fallback, and never switches modes silently.
+  A second-pass result that differs from the streaming text replaces the
+  unemitted final delta and adds the structured review reason
+  `decoder_disagreement`. Statistics: `engine.get_statistics()["second_pass"]`
+  and `second_pass_stats` (`runs`/`rewrites`/`fallbacks`). In endpoint-only
+  mode the single offline decode *is* the full-context pass, so the second
+  pass is skipped (the decoder retains no separate streaming audio).
 - Default VAD: onset RMS .015, offset .008, 250 ms onset confirmation, 700 ms
   endpoint silence, 320 ms pre-roll, 20 s maximum segment. Tune RMS thresholds
   to your microphone's gain/noise; this detector is not speech classification.
   Continuous speech creates explicit END/START boundaries without replaying
   audio. Phrases crossing a forced boundary may lose linguistic context.
+  There is **no denoising** — but each completed segment gets lightweight,
+  deterministic audio diagnostics (RMS, peak, clipping ratio, level
+  `silent|low|ok|clipped`) that are logged and exposed in
+  `AudioCapture.get_statistics()` (including `clipped_segments` /
+  `low_level_segments` counters) so a quiet or clipping microphone is visible.
+  Diagnostics never alter the transcript.
   Forced cuts (VAD segment cap, ASR window cap) are tagged and never treated
   as natural endpoints: a number phrase left open at the cut (``سی و`` |
   ``پنج``) keeps its spoken words unparsed and logs a warning instead of being
@@ -169,7 +202,9 @@ win over `.env`. Useful environment variables:
 `SHENAVA_MODEL_PATH`, `SHENAVA_MODEL_NAME`, `SHENAVA_DEVICE`,
 `SHENAVA_NUM_THREADS`, `SHENAVA_RIGHT_CONTEXT`, `SHENAVA_PARTIAL_INTERVAL_S`,
 `SHENAVA_REQUIRE_STREAMING`, `SHENAVA_ALLOW_DOWNLOAD`, `SHENAVA_AUDIO_DEVICE`,
-`SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`, `SHENAVA_LOG_LEVEL`.
+`SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`, `SHENAVA_LOG_LEVEL`,
+`SHENAVA_SECOND_PASS` (`off|greedy|context`), `SHENAVA_HOTWORD_SPECIALTY`,
+`SHENAVA_HOTWORD_MAX`.
 
 `SHENAVA_DECODER` accepts only `ctc`. Invalid numeric ranges are rejected.
 JSON exposes the VAD, UI and optional output settings in `config.py`.
@@ -252,6 +287,27 @@ Negation scope is deliberately local and conservative (`بدون تب`, `تب ن
 left or bilateral anatomy are represented as metadata rather than rewritten.
 This is not full clinical reasoning. Unknown/ambiguous text remains unchanged.
 
+After rendering, `value_validation.py` performs deterministic plausibility
+checks on the *typed* spans (percentage 0–100, body temperature 24–45 °C /
+75–113 °F, pulse 20–300 bpm, non-positive doses, explicit BP connector pairs
+with systolic > diastolic inside 60–260 / 30–160). An obviously malformed
+value is **preserved verbatim** and adds a structured reason
+`suspicious_value:<kind>=<value>` plus a `ProcessingResult.value_issues`
+entry — it is never silently corrected, and abnormal-but-possible readings
+(e.g. SpO2 84%) are not flagged. `ProcessingResult.review_reasons` (also
+`pipeline.last_review_reasons` / `engine.last_review_reasons`) is a stable
+sorted list drawn from: `rare_medical_term`, `drug_name`, `dose_value`,
+`numeric_value`, `negation_sensitive`, `laterality_sensitive`,
+`forced_boundary`, `decoder_disagreement`, `suspicious_value:*`, and
+`unsafe_terminology:<rule id>`. Reasons are flags for review; they do not
+alter the output text.
+
+Recurring ASR misspellings of a known term can be collected for human review
+with `tools/collect_term_variants.py CORPUS.jsonl --term "CABG" --suggest`:
+reference → observed raw variant → reviewed candidate → terminology rule. The
+suggested fragment is printed for review only and is **never** written into
+`terminology.json` automatically.
+
 ## Optional clinical extraction / persistence
 
 ```bash
@@ -297,11 +353,17 @@ python tools/verify_pipeline.py --model /models/shenava-koochik-v1.0.nemo \
 ```
 
 `evaluate_medical.py` reports raw-ASR and post-processing WER/CER separately,
-category error rates (medical terms, medications, numbers, units, negation and
-laterality), and entity precision/recall/F1. The bundled corpus is a small
-engineering regression fixture, not a representative clinical benchmark; its
-scores must not be presented as clinical accuracy or generalized improvement.
-Use a versioned, consented domain corpus for deployment decisions.
+category error rates (medical terms, medications, numbers, units, dose,
+negation and laterality), a **forced-boundary error rate** (corpus rows with
+`"forced": true` run the pipeline's forced-endpoint path and must keep the
+preserved spoken words), a weighted **medical essential error** (reference
+characters inside reviewed entity spans cost 3×, ordinary prose 1×), and
+entity precision/recall/F1. The bundled corpus covers code-switching, drugs,
+abbreviations, measurements, rates, negation, laterality, radiology/ultrasound,
+cardiology, nursing and forced splits; it is a small engineering regression
+fixture, not a representative clinical benchmark; its scores must not be
+presented as clinical accuracy or generalized improvement. Use a versioned,
+consented domain corpus for deployment decisions.
 
 Replay requires PCM16, mono, 16 kHz WAV and runs at microphone speed. It uses the
 real backend unless `--self-test` is explicitly supplied. Native streaming is

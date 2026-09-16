@@ -1,12 +1,14 @@
 """Deterministic rewrite tables (medical terms, abbreviations, units).
 
-Every entry is an exact phrase -> replacement mapping consumed by
-:class:`shenava_realtime.fst.TrieFST`.  Keys are matched after Persian
-normalization, and multi-word keys win over shorter ones because the automaton
-takes the longest match.
+Every entry is an exact phrase -> replacement mapping consumed by the
+Aho-Corasick matcher (``aho_corasick.py``) and the measurement grammar.  Keys
+are matched after Persian normalization, and multi-word keys win over shorter
+ones because the resolver takes the longest match.
 
 Spelling variants (with and without a ZWNJ, singular/plural) are listed
-explicitly rather than guessed at runtime.
+explicitly rather than guessed at runtime.  The reviewed source of truth for
+pipeline terminology is ``data/terminology.json``; keep the unit table here
+in sync with its ``unit`` rules.
 """
 
 from __future__ import annotations
@@ -114,6 +116,8 @@ UNITS: Dict[str, str] = {
     "میلی لیتر در دقیقه": "mL/min",
     "میلی گرم در دسی لیتر": "mg/dL",
     "میلی مول در لیتر": "mmol/L",
+    "میلی گرم در کیلو گرم": "mg/kg",
+    "میلیگرم در کیلوگرم": "mg/kg",
     "میلی متر جیوه": "mmHg",
     "میکروگرم در میلی لیتر": "mcg/mL",
     "μg": "mcg",

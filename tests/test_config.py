@@ -31,6 +31,9 @@ def clean_env(monkeypatch):
         "SHENAVA_LOG_LEVEL",
         "SHENAVA_PARTIAL_INTERVAL_S",
         "SHENAVA_DEBUG",
+        "SHENAVA_SECOND_PASS",
+        "SHENAVA_HOTWORD_SPECIALTY",
+        "SHENAVA_HOTWORD_MAX",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -143,3 +146,36 @@ def test_dropout_timeout_is_bounded():
         AudioConfig(dropout_timeout_s=61)
     with pytest.raises(ValueError):
         AudioConfig(dropout_timeout_s=float("nan"))
+
+
+def test_second_pass_defaults_and_env_overrides(monkeypatch):
+    config = AppConfig()
+    assert config.asr.second_pass == "greedy"
+    assert config.asr.second_pass_min_utterance_s == 0.5
+    assert config.asr.second_pass_beam_size == 4
+    assert config.asr.hotword_specialty is None
+    assert config.asr.hotword_max == 64
+
+    monkeypatch.setenv("SHENAVA_SECOND_PASS", "CONTEXT")
+    monkeypatch.setenv("SHENAVA_HOTWORD_SPECIALTY", " cardiology ")
+    monkeypatch.setenv("SHENAVA_HOTWORD_MAX", "8")
+    config = apply_env_overrides(AppConfig())
+    assert config.asr.second_pass == "context"
+    assert config.asr.hotword_specialty == "cardiology"
+    assert config.asr.hotword_max == 8
+
+    monkeypatch.setenv("SHENAVA_HOTWORD_SPECIALTY", "   ")
+    config = apply_env_overrides(AppConfig())
+    assert config.asr.hotword_specialty is None
+
+
+def test_second_pass_invalid_values_rejected(monkeypatch):
+    from shenava_realtime.config import ASRConfig
+
+    monkeypatch.setenv("SHENAVA_SECOND_PASS", "beam-only")
+    with pytest.raises(ValueError, match="second_pass"):
+        apply_env_overrides(AppConfig())
+    with pytest.raises(ValueError):
+        ASRConfig(second_pass="")
+    with pytest.raises(ValueError):
+        ASRConfig(right_context=7)

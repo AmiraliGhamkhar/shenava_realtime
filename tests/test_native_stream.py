@@ -109,3 +109,28 @@ def test_native_does_not_decode_utterance_windows_and_bounds_audio(stream):
     stream.reset()
     with pytest.raises(ValueError, match='Non-finite'):
         stream.push(np.array([np.nan], np.float32))
+
+
+def test_final_flush_has_no_duplicate_or_lost_frames(stream):
+    # The centered frontend of a 1 s signal has 4001 frames.  After an
+    # irregular push sequence plus the final flush, the frame cursor must be
+    # exactly 4001: every frame consumed once, in order, by the cache-aware
+    # encoder (overlapping chunks are re-encoded, never re-consumed).
+    n = 16000
+    audio = np.sin(np.linspace(0.0, 10.0, n)).astype(np.float32)
+    position = 0
+    for size in (511, 37, 5000, 6000, 4452):
+        position += size
+        stream.push(audio[position - size:position])
+    assert stream.total == n
+    text, score = stream.finalize()
+    assert text.startswith('متن') and score == 0
+    assert stream.next_frame == n // 4 + 1
+    # Exactly one call decodes the tail with all outputs; the encoder cache
+    # was handed across calls (previous output becomes the next cache state).
+    assert stream.model.calls[-1]['keep_all_outputs']
+    assert sum(bool(c['keep_all_outputs']) for c in stream.model.calls) == 1
+    # Encoder cache handoff: every call's cache state is the previous call's
+    # prediction output (the double increments it by one per step).
+    for previous, call in zip(stream.model.calls, stream.model.calls[1:]):
+        assert call['cache_last_channel'] == previous['cache_last_channel'] + 1

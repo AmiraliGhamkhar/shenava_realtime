@@ -1302,6 +1302,28 @@
       "enabled": true
     },
     {
+      "id": "unit.0029",
+      "canonical": "mg/kg",
+      "spoken_forms": [
+        "میلی گرم در کیلو گرم",
+        "میلیگرم در کیلوگرم",
+        "mg در kg"
+      ],
+      "aliases": [
+        "mg/kg"
+      ],
+      "phonetic_variants": [],
+      "category": "unit",
+      "specialty": "general",
+      "priority": 80,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
       "id": "anatomy.knee",
       "canonical": "زانو",
       "spoken_forms": [

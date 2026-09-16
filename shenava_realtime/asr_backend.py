@@ -43,6 +43,29 @@ class CacheAwareStream(Protocol):
         ...
 
 
+class SecondPassUnavailable(RuntimeError):
+    """The context second pass cannot be built; fail clearly, do not degrade."""
+
+
+def _select_logits(output: Any, vocab_size: Optional[int]) -> Any:
+    """Find the CTC logits tensor among the shapes ``model.forward`` may return."""
+    torch = None
+    candidates = [output]
+    if isinstance(output, (tuple, list)):
+        candidates = list(output)
+    for item in candidates:
+        try:
+            ndim = item.dim()
+        except AttributeError:
+            continue
+        if ndim == 3 and item.shape[0] == 1:
+            if vocab_size is None or int(item.shape[2]) == vocab_size:
+                return item[0]
+        if ndim == 2 and (vocab_size is None or int(item.shape[1]) == vocab_size):
+            return item
+    return None
+
+
 class NeMoASR:
     """Loads the Shenava checkpoint and decodes with its CTC head."""
 
@@ -218,6 +241,117 @@ class NeMoASR:
             return None
         from .native_stream import NeMoCacheAwareStream
         return NeMoCacheAwareStream(self._model, self._import_torch(), self.config.max_segment_s)
+
+    # ------------------------------------------------------------------ #
+    # Context second pass (CTC beam + hotword biasing).  Every probe below is
+    # explicit: a mismatched checkpoint API raises SecondPassUnavailable at
+    # startup instead of silently running a different decoder.
+    # ------------------------------------------------------------------ #
+    def build_second_pass(self, config: "ASRConfig"):
+        from .second_pass import BeamSecondPass, GreedySecondPass
+
+        model = self.model  # ensures the checkpoint is loaded
+        torch = self._import_torch()
+        tokenize, decode_tokens, vocab_size = self._probe_tokenizer(model)
+        emissions_fn = self._probe_emissions(model, torch, vocab_size)
+        blank = self._probe_blank_index(model, vocab_size)
+        logger.info(
+            "second pass ready: beam=%d vocab=%d blank=%d",
+            config.second_pass_beam_size, vocab_size, blank,
+        )
+        return BeamSecondPass(
+            emissions_fn,
+            tokenize,
+            decode_tokens,
+            blank,
+            config.second_pass_beam_size,
+            GreedySecondPass(self.transcribe),
+        )
+
+    def _probe_tokenizer(self, model: Any) -> tuple:
+        spec = getattr(model, "tokenizer", None) or getattr(model, "_tokenizer", None)
+        if spec is None:
+            raise SecondPassUnavailable("checkpoint exposes no tokenizer; hotword biasing needs the model's own BPE vocabulary")
+        inner = getattr(spec, "tokenizer", spec)
+
+        def tokenize(text: str) -> list[int]:
+            if not hasattr(inner, "encode"):
+                raise SecondPassUnavailable("tokenizer has no encode()")
+            try:
+                ids = inner.encode(text)
+            except TypeError:
+                ids = inner.encode(text, add_special_tokens=False)
+            if isinstance(ids, str):
+                ids = ids.split()
+            return [int(x) for x in ids]
+
+        vocab = None
+        getter = getattr(inner, "get_vocab", None)
+        if callable(getter):
+            try:
+                vocab = getter()
+            except Exception:
+                vocab = None
+        if vocab is None:
+            attr = getattr(inner, "vocab", None)
+            if isinstance(attr, (list, dict)):
+                vocab = attr
+        if vocab is None:
+            raise SecondPassUnavailable("tokenizer exposes no vocabulary for token->text decoding")
+        if isinstance(vocab, dict):
+            keys = list(vocab)[:8]
+            if keys and all(isinstance(k, int) for k in keys):
+                vocab = [vocab[k] for k in sorted(vocab)]
+            else:
+                vocab = [str(value) for value in vocab.values()]
+        if not vocab:
+            raise SecondPassUnavailable("tokenizer vocabulary is empty")
+
+        if hasattr(inner, "decode"):
+            def decode_tokens(ids) -> str:
+                return inner.decode(list(ids))
+        else:
+            def decode_tokens(ids) -> str:
+                parts = [vocab[i] if 0 <= i < len(vocab) else "" for i in ids]
+                text = "".join(parts).replace("\u2581", " ").strip()
+                return " ".join(text.split())
+        return tokenize, decode_tokens, len(vocab)
+
+    def _probe_emissions(self, model: Any, torch: Any, vocab_size: int):
+        preprocessor = getattr(model, "preprocessor", None)
+        if preprocessor is None or not hasattr(model, "forward"):
+            raise SecondPassUnavailable("checkpoint has no preprocessor/forward for CTC emissions")
+
+        def emissions_fn(audio: np.ndarray) -> np.ndarray:
+            samples = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
+            with torch.inference_mode():
+                signal = torch.from_numpy(samples).unsqueeze(0).to(model.device)
+                length = torch.tensor([samples.size], device=model.device, dtype=torch.long)
+                processed, processed_length = preprocessor(input_signal=signal, length=length)
+                output = model.forward(processed, processed_length)
+            logits = _select_logits(output, vocab_size)
+            if logits is None:
+                raise SecondPassUnavailable(
+                    "model.forward did not return CTC logits with vocabulary "
+                    f"{vocab_size}; the context second pass is not available for this checkpoint"
+                )
+            log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+            return log_probs.detach().cpu().numpy().astype(np.float32)
+
+        return emissions_fn
+
+    def _probe_blank_index(self, model: Any, vocab_size: int) -> int:
+        for module_name in ("ctc_decoder", "_ctc_decoder", "ctc_decoding", "_ctc_decoding"):
+            decoder = getattr(model, module_name, None)
+            if decoder is None:
+                continue
+            for attr in ("ctc_blank_index", "blank_index", "_blank_index"):
+                value = getattr(decoder, attr, None)
+                if isinstance(value, int) and 0 <= value < vocab_size:
+                    return value
+        # NeMo convention: the CTC blank is token 0.
+        logger.debug("no explicit ctc_blank_index found; using NeMo convention (0)")
+        return 0
 
     # ------------------------------------------------------------------ #
     @staticmethod

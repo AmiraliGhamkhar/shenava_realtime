@@ -9,6 +9,7 @@ from .span_resolver import SpanResolver
 from .spans import ClinicalSpan, MedicationSpan, MeasurementSpan, NumberSpan, Replacement, TextSpan
 from .terminology import TerminologyRule, build_matcher, default_rules
 from .text_normalize import digits_to_persian
+from .value_validation import ValueIssue, validate_bp_pairs, validate_measurements
 
 
 @dataclass
@@ -24,6 +25,7 @@ class ProcessingResult:
     protected_spans: list = field(default_factory=list)
     review_required: bool = False
     review_reasons: list[str] = field(default_factory=list)
+    value_issues: list[ValueIssue] = field(default_factory=list)
 
 
 class ProtectedSpanDetector:
@@ -53,6 +55,11 @@ class MedicalNormalizationPipeline:
     def process_normalized(self, text: str, *, convert_numbers=True) -> ProcessingResult:
         initial_protected = self.protector.detect(text)
         candidates = self.matcher.find(text)
+        # A candidate whose output is exactly the matched text (a self-alias
+        # such as the Latin "EKG" for "EKG") is a no-op rewrite, not a
+        # conflict: it must not be flagged as unsafe just because the span is
+        # protected.  Case normalisation (cabg -> CABG) is NOT a no-op.
+        candidates = [c for c in candidates if c.pattern.output != c.text]
         terms, review = self.resolver.resolve(candidates, protected=initial_protected)
         unit_tokens = {r.canonical.lower() for r in self.rules if r.category == "unit"}
         unit_tokens.update(form.split()[0].replace("\u200c", "") for r in self.rules
@@ -99,9 +106,41 @@ class MedicalNormalizationPipeline:
             True, {"rule_id": m.pattern.payload.id}) for m in terms
             if m.pattern.payload.category == "unit" or m.pattern.payload.negation_sensitive]
         protected = [*initial_protected, *semantic_terms, *numbers, *measurements, *medications]
-        reasons = sorted({f"unsafe_terminology:{m.pattern.payload.id}" for m in review})
+
+        # Structured review signals. Flags only: they never alter the text.
+        reasons: set[str] = set()
+        for match in terms:
+            payload = match.pattern.payload
+            if payload.risk in ("medium", "high") or payload.priority >= 90:
+                reasons.add("rare_medical_term")
+            if payload.negation_sensitive:
+                reasons.add("negation_sensitive")
+            if payload.laterality_sensitive:
+                reasons.add("laterality_sensitive")
+        if medications:
+            reasons.add("drug_name")
+        if any(med.dose is not None for med in medications) or any(
+            m.kind == "dose" for m in measurements
+        ):
+            reasons.add("dose_value")
+        # Any spoken number that was converted to a digit is a review flag:
+        # a human should confirm the value, not the formatting.
+        if numbers:
+            reasons.add("numeric_value")
+        if any(c.assertion == "negated" for c in clinical):
+            reasons.add("negation_sensitive")
+        if any(c.laterality != "unspecified" for c in clinical):
+            reasons.add("laterality_sensitive")
+        issues = (
+            validate_measurements(measurements) + validate_bp_pairs(text, numbers)
+            if convert_numbers
+            else []
+        )
+        reasons.update(issue.reason for issue in issues)
+        reasons.update(f"unsafe_terminology:{m.pattern.payload.id}" for m in review)
+
         return ProcessingResult(text, text, canonical, terms, numbers, measurements,
-            medications, clinical, protected, bool(reasons), reasons)
+            medications, clinical, protected, bool(reasons), sorted(reasons), issues)
 
     def _format(self, value) -> str:
         if isinstance(value, str): result = value

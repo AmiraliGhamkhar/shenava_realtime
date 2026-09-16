@@ -115,3 +115,42 @@ were already satisfied and only needed an explicit regression pin.
   distinguished from two separate values without linguistic context, so only
   open phrases (trailing `و`/`ممیز`) and the mirrored leading run are
   suppressed; the rest stays reviewable output as before.
+
+## Third-pass review: accuracy/robustness hardening (second pass, hotwords, validation, diagnostics)
+
+All changes preserve the architecture, public APIs, CLI, desktop output modes,
+queue/discontinuity behavior and the safety-first design. No LLM/embedding/
+vector-DB/heavy NLP dependency was added; the beam decoder is a small
+deterministic NumPy module over the model's own emissions and BPE vocabulary.
+
+| Finding / request | Change |
+|---|---|
+| Live greedy decoding has no full-context repair at a natural utterance end | Config-optional utterance-end **second pass** (`second_pass`: `off`/`greedy`/`context`, default `greedy`; CLI `--second-pass`, env `SHENAVA_SECOND_PASS`). Runs only on natural endpoints (never forced cuts), only for utterances ≥ `second_pass_min_utterance_s`, only in endpoint-commit mode (early-commit disables it with a warning). `greedy` reuses the backend's `transcribe`; `context` uses `NeMoASR.build_second_pass` → `BeamSecondPass` (CTC beam over `model.forward` logits, blank index probed from `ctc_decoder` with the documented default of 0). Failures keep the streaming text, count a fallback, log a warning — never a silent mode switch; a missing capability in `context` mode is a startup `RuntimeError`. `GreedySecondPass`/`CTCBeamDecoder`/`BeamSecondPass` live in `second_pass.py` with a two-method interface (`decode_greedy`, `decode_with_context`) |
+| Post-ASR terminology rules were ignored by the decoder | Decoder-time **hotword biasing** from the same reviewed `terminology.json` rules (no second dictionary): `hotwords.build_hotwords` (bounded by `hotword_max`, specialty subset + general, deterministic priority order, category-weighted conservative log-prob boosts, unit/anatomy excluded). Biases apply only while the beam path continues a hotword token prefix (`hotword_token_bias`); untokenizable phrases are skipped. Built only for `context` mode |
+| Suspected values (SpO2 102%, temperature 50°, pulse 1000 bpm, reversed BP) were emitted without any structured flag | `value_validation.py`: deterministic plausibility checks on typed spans (explicit conservative ranges). Source text is **always preserved**; results are `ValueIssue` entries on `ProcessingResult.value_issues` plus `suspicious_value:<kind>=<value>` review reasons. BP connector pairs (`روی`/`بر روی`/`خط`) that the grammar already refuses to parse are recorded with the same mechanism. Clinical records (`extract_record`) run the same checks on persisted measurements and merge the pipeline's review reasons into `record["review_reasons"]` (additive JSON key; `review_required` stays `true`) |
+| No structured review reasons beyond `review_required` | `ProcessingResult.review_reasons` / `pipeline.last_review_reasons` / `engine.last_review_reasons` expose a stable sorted list: `rare_medical_term`, `drug_name`, `dose_value`, `numeric_value`, `negation_sensitive`, `laterality_sensitive`, `forced_boundary`, `decoder_disagreement`, `suspicious_value:*`, `unsafe_terminology:<id>`. `main.py` forwards the reasons to clinical persistence. Reasons never alter text |
+| A self-alias rule whose output equals the matched text (e.g. Latin `EKG` for `EKG`) was flagged `unsafe_terminology` because the protected span conflicted with its own no-op rewrite | `MedicalNormalizationPipeline` filters candidates whose output is exactly the matched text (case normalisation like `cabg` → `CABG` is **not** a no-op and still rewrites) |
+| Grammar gaps found while probing realistic inputs | `medical_grammar.py`: rate keywords (`نبض`/`ضربان`/`ضربان قلب` → bpm, `نفس` → rpm) with the explicit `در دقیقه` tail (span covers number..`دقیقه` only; never rewrites an already-unitful value); `mg/kg` unit (both spellings + `mg در kg`) in `lexicon.py`/`terminology.json` (`unit.0029`); `U insulin` classified as a dose unit; medication grammar no longer double-counts the drug word inside `واحد انسولین` |
+| Quiet/clipping microphones were invisible | `audio_diagnostics.py` + `AudioCapture`: per-segment RMS/peak/clipping-ratio/level (`silent|low|ok|clipped`) computed at SPEECH_END, logged, exposed via `get_statistics()` (`last_segment`, `clipped_segments`, `low_level_segments`). Metrics only — no denoising, no transcript effect |
+| No evidence-driven path to collect recurring ASR misspellings of a reviewed term | `variants.py` (`align_tokens` token-level edit alignment, `project_span` with the single-token/absorb-deleted-adjacent heuristic for split spoken forms) + `tools/collect_term_variants.py` CLI (reference → observed → reviewed → rule; `--suggest` prints a review fragment, never writes `terminology.json`) |
+| Frontend streaming/offline alignment was only partly covered | `tests/test_frontend.py`: faithful centered-window (rectangular STFT proxy) preprocessor double; every encoder window the stream re-encodes is asserted equal to the offline frames at its absolute position within a bounded tolerance; raw buffer bounded + hop-aligned; no lost/duplicate frames at the final flush; unsupported sample rate fails at initialization (`native_stream.py` now validates `cfg.preprocessor.sample_rate == 16000`) |
+| Evaluator lacked dose/forced-boundary/high-risk weighting | `tools/evaluate_medical.py`: per-category error rates incl. **dose**; **forced-boundary error rate** (corpus rows `"forced": true` run the pipeline's forced path, reference keeps the spoken words); **medical essential error** (weighted character distance: reference characters inside entity spans cost 3×, prose 1×); trailing "engineering regression only — not clinical validation" note. Corpus expanded 6 → 33 rows (code-switching, drugs, abbreviations, rates, temperature, mg/kg, SpO2, FBS, CHF, CABG/PCI/ICU, dates, unknown-unit preservation, negation/laterality, forced splits, suspicious-value preservation) |
+
+## Checks executed in the third pass
+
+- Before changes: `.venv/bin/pytest -q` — 291 passed; `main.py --self-test`
+  exit 0; evaluator 6 samples with 0 post-processing WER/CER.
+- After changes: `.venv/bin/pytest -q` — 381 passed (90 new tests: second
+  pass/beam/hotwords, value validation, audio diagnostics, variant
+  collection, VAD boundary scenarios, frontend parity, native flush
+  accounting, WAV replay, engine second pass, CLI flags, config env,
+  post-processor grammar); `main.py --self-test` exit 0 (second pass
+  `runs=1`, record carries `dose_value`/`numeric_value` reasons); evaluator
+  on the 33-row corpus: post WER/CER 0, all category rates 0, forced-boundary
+  rate 0, medical essential error 0.
+- Real NeMo checkpoint runs, real WAV replay against the published model,
+  `[70,13]` native streaming on hardware and CPU/GPU latency remain
+  **unverified in this environment** (torch/NeMo unavailable; the CPU download
+  attempt failed earlier with a TLS/network error). Those paths are covered by
+  the tensor/model doubles and the headless WAV-replay test against a labelled
+  fake backend.
