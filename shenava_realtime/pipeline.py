@@ -290,10 +290,12 @@ class TranscriptionPipeline:
             self._split_continues = True
         if leading or tail:
             self._emit_forced_protected = True
+            # Length only: the spoken number words are clinical content and
+            # must not reach the log. The review flag carries the signal.
             logger.warning(
-                "number phrase %r spans a forced segment boundary; "
+                "a number phrase (%d words) spans a forced segment boundary; "
                 "keeping the spoken words unparsed",
-                " ".join(part for part in (leading, tail) if part),
+                len(" ".join(part for part in (leading, tail) if part).split()),
             )
         head = committed
         if leading:

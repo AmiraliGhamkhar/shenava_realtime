@@ -1502,6 +1502,1289 @@
       "laterality_sensitive": false,
       "number_sensitive": true,
       "enabled": true
+    },
+    {
+      "id": "medication.atorvastatin",
+      "canonical": "آتورواستاتین",
+      "spoken_forms": [
+        "آتورواستاتین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "اتورواستاتین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.amlodipine",
+      "canonical": "آملودیپین",
+      "spoken_forms": [
+        "آملودیپین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "املودیپین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.losartan",
+      "canonical": "لوزارتان",
+      "spoken_forms": [
+        "لوزارتان"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.warfarin",
+      "canonical": "وارفارین",
+      "spoken_forms": [
+        "وارفارین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.heparin",
+      "canonical": "هپارین",
+      "spoken_forms": [
+        "هپارین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.enoxaparin",
+      "canonical": "انوکساپارین",
+      "spoken_forms": [
+        "انوکساپارین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "انوکسا پارین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.clopidogrel",
+      "canonical": "کلوپیدوگرل",
+      "spoken_forms": [
+        "کلوپیدوگرل"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "کلوپیدوگرل",
+        "پلاویکس"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.furosemide",
+      "canonical": "فوروزماید",
+      "spoken_forms": [
+        "فوروزماید"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "فروزماید",
+        "لازیکس"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.metoprolol",
+      "canonical": "متوپرولول",
+      "spoken_forms": [
+        "متوپرولول"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.ceftriaxone",
+      "canonical": "سفتریاکسون",
+      "spoken_forms": [
+        "سفتریاکسون"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "سفتریاکسون"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.vancomycin",
+      "canonical": "ونکومایسین",
+      "spoken_forms": [
+        "ونکومایسین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.amoxicillin",
+      "canonical": "آموکسی‌سیلین",
+      "spoken_forms": [
+        "آموکسی سیلین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "اموکسی سیلین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.pantoprazole",
+      "canonical": "پنتوپرازول",
+      "spoken_forms": [
+        "پنتوپرازول"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.acetaminophen",
+      "canonical": "استامینوفن",
+      "spoken_forms": [
+        "استامینوفن"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.morphine",
+      "canonical": "مورفین",
+      "spoken_forms": [
+        "مورفین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.levothyroxine",
+      "canonical": "لووتیروکسین",
+      "spoken_forms": [
+        "لووتیروکسین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "لوتیروکسین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.prednisolone",
+      "canonical": "پردنیزولون",
+      "spoken_forms": [
+        "پردنیزولون"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "پردنیزولون"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.salbutamol",
+      "canonical": "سالبوتامول",
+      "spoken_forms": [
+        "سالبوتامول"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "سالبوتامول",
+        "ونتولین"
+      ],
+      "category": "medication",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "medium",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "medication.nitroglycerin",
+      "canonical": "نیتروگلیسیرین",
+      "spoken_forms": [
+        "نیتروگلیسیرین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "تی ان جی"
+      ],
+      "category": "medication",
+      "specialty": "cardiology",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "procedure.angiography",
+      "canonical": "آنژیوگرافی",
+      "spoken_forms": [
+        "آنژیوگرافی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "انژیوگرافی"
+      ],
+      "category": "procedure",
+      "specialty": "cardiology",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.angioplasty",
+      "canonical": "آنژیوپلاستی",
+      "spoken_forms": [
+        "آنژیوپلاستی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "cardiology",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.endoscopy",
+      "canonical": "آندوسکوپی",
+      "spoken_forms": [
+        "آندوسکوپی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "اندوسکوپی"
+      ],
+      "category": "procedure",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.colonoscopy",
+      "canonical": "کولونوسکوپی",
+      "spoken_forms": [
+        "کولونوسکوپی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.bronchoscopy",
+      "canonical": "برونکوسکوپی",
+      "spoken_forms": [
+        "برونکوسکوپی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "pulmonology",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.biopsy",
+      "canonical": "بیوپسی",
+      "spoken_forms": [
+        "بیوپسی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.dialysis",
+      "canonical": "دیالیز",
+      "spoken_forms": [
+        "دیالیز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "nephrology",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.intubation",
+      "canonical": "لوله‌گذاری تراشه",
+      "spoken_forms": [
+        "لوله گذاری تراشه",
+        "اینتوبه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.appendectomy",
+      "canonical": "آپاندکتومی",
+      "spoken_forms": [
+        "آپاندکتومی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "اپاندکتومی"
+      ],
+      "category": "procedure",
+      "specialty": "surgery",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "procedure.cholecystectomy",
+      "canonical": "کوله‌سیستکتومی",
+      "spoken_forms": [
+        "کوله سیستکتومی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "procedure",
+      "specialty": "surgery",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.chest_xray",
+      "canonical": "رادیوگرافی قفسه سینه",
+      "spoken_forms": [
+        "عکس قفسه سینه",
+        "رادیوگرافی قفسه سینه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.ultrasound",
+      "canonical": "سونوگرافی",
+      "spoken_forms": [
+        "سونوگرافی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.mri_brain",
+      "canonical": "MRI مغز",
+      "spoken_forms": [
+        "ام آر آی مغز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.doppler",
+      "canonical": "داپلر",
+      "spoken_forms": [
+        "داپلر",
+        "سونوگرافی داپلر"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "imaging.mammography",
+      "canonical": "ماموگرافی",
+      "spoken_forms": [
+        "ماموگرافی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "imaging",
+      "specialty": "radiology",
+      "priority": 90,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.bun",
+      "canonical": "BUN",
+      "spoken_forms": [
+        "بی یو ان"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.creatinine",
+      "canonical": "کراتینین",
+      "spoken_forms": [
+        "کراتینین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medical_term",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "lab.esr",
+      "canonical": "ESR",
+      "spoken_forms": [
+        "ای اس آر"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.ldh",
+      "canonical": "LDH",
+      "spoken_forms": [
+        "ال دی اچ"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.ast",
+      "canonical": "AST",
+      "spoken_forms": [
+        "ای اس تی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.alt",
+      "canonical": "ALT",
+      "spoken_forms": [
+        "ای ال تی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.tsh",
+      "canonical": "TSH",
+      "spoken_forms": [
+        "تی اس اچ"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.ptt",
+      "canonical": "PTT",
+      "spoken_forms": [
+        "پی تی تی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "lab.troponin",
+      "canonical": "تروپونین",
+      "spoken_forms": [
+        "تروپونین"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medical_term",
+      "specialty": "cardiology",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "lab.urinalysis",
+      "canonical": "U/A",
+      "spoken_forms": [
+        "یو ای",
+        "آنالیز ادرار"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "route.sublingual",
+      "canonical": "زیرزبانی",
+      "spoken_forms": [
+        "زیرزبانی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "route.inhaled",
+      "canonical": "استنشاقی",
+      "spoken_forms": [
+        "استنشاقی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medical_term",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.bid",
+      "canonical": "دو بار در روز",
+      "spoken_forms": [
+        "دو بار در روز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.tid",
+      "canonical": "سه بار در روز",
+      "spoken_forms": [
+        "سه بار در روز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.qid",
+      "canonical": "چهار بار در روز",
+      "spoken_forms": [
+        "چهار بار در روز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.daily",
+      "canonical": "یک بار در روز",
+      "spoken_forms": [
+        "یک بار در روز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "medical_term",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.prn",
+      "canonical": "در صورت نیاز",
+      "spoken_forms": [
+        "در صورت نیاز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "frequency.stat",
+      "canonical": "فوری",
+      "spoken_forms": [
+        "فوری"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "general",
+      "priority": 60,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": false,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.hypertension",
+      "canonical": "فشار خون بالا",
+      "spoken_forms": [
+        "فشار خون بالا",
+        "هایپرتنشن"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "cardiology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.asthma",
+      "canonical": "آسم",
+      "spoken_forms": [
+        "آسم"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "pulmonology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.copd",
+      "canonical": "COPD",
+      "spoken_forms": [
+        "سی او پی دی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "abbreviation",
+      "specialty": "pulmonology",
+      "priority": 70,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.pneumonia",
+      "canonical": "پنومونی",
+      "spoken_forms": [
+        "پنومونی",
+        "ذات الریه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "pulmonology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.anemia",
+      "canonical": "آنمی",
+      "spoken_forms": [
+        "آنمی",
+        "کم خونی"
+      ],
+      "aliases": [],
+      "phonetic_variants": [
+        "انمی"
+      ],
+      "category": "disease",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.hypothyroidism",
+      "canonical": "کم‌کاری تیروئید",
+      "spoken_forms": [
+        "کم کاری تیروئید"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.epilepsy",
+      "canonical": "صرع",
+      "spoken_forms": [
+        "صرع"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "neurology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.cirrhosis",
+      "canonical": "سیروز",
+      "spoken_forms": [
+        "سیروز"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.sepsis",
+      "canonical": "سپسیس",
+      "spoken_forms": [
+        "سپسیس"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "high",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "disease.migraine",
+      "canonical": "میگرن",
+      "spoken_forms": [
+        "میگرن"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "disease",
+      "specialty": "neurology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.nausea",
+      "canonical": "تهوع",
+      "spoken_forms": [
+        "تهوع"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.vomiting",
+      "canonical": "استفراغ",
+      "spoken_forms": [
+        "استفراغ"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.headache",
+      "canonical": "سردرد",
+      "spoken_forms": [
+        "سردرد"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.dizziness",
+      "canonical": "سرگیجه",
+      "spoken_forms": [
+        "سرگیجه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.cough",
+      "canonical": "سرفه",
+      "spoken_forms": [
+        "سرفه"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.palpitation",
+      "canonical": "تپش قلب",
+      "spoken_forms": [
+        "تپش قلب"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "cardiology",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
+    },
+    {
+      "id": "symptom.edema",
+      "canonical": "ادم",
+      "spoken_forms": [
+        "ادم",
+        "ورم"
+      ],
+      "aliases": [],
+      "phonetic_variants": [],
+      "category": "symptom",
+      "specialty": "general",
+      "priority": 50,
+      "risk": "low",
+      "requires_context": false,
+      "negation_sensitive": true,
+      "laterality_sensitive": false,
+      "number_sensitive": false,
+      "enabled": true
     }
   ]
 }

@@ -83,6 +83,11 @@ SCALES: Dict[str, int] = {
 CONNECTOR = "و"
 HALF = "نیم"
 DECIMAL_MARKER = "ممیز"
+# Words that can only be followed by the rest of a measurement: a BP ratio
+# connector, a numeric-range connector, or a per-unit connector.  Left dangling
+# at a forced segment boundary the phrase is clearly unfinished (see
+# ``open_number_tail``), so its values must not be parsed independently.
+OPEN_CONNECTORS = ("روی", "خط", "تا", "بر")
 
 _STARTERS: Set[str] = set(DIGITS) | set(TEENS) | set(TENS) | set(HUNDREDS) | set(SCALES)
 _VALUE_WORDS: Dict[str, int] = {**DIGITS, **TEENS, **TENS, **HUNDREDS}
@@ -174,18 +179,23 @@ def parse_number_phrase(
 def open_number_tail(text: str) -> str:
     """Trailing *unfinished* number phrase of ``text`` ("" when complete).
 
-    A phrase is unfinished when its last token is the conjunction ``و`` or a
-    dangling decimal marker directly after number words: the grammar consumed
-    a value and was still waiting for the continuation when the tokens ran
-    out.  Used at forced VAD/ASR segment boundaries, where a phrase such as
-    ``سی و | پنج`` must not be parsed as two complete (wrong) values.
+    A phrase is unfinished when its last token is the conjunction ``و``, a
+    dangling decimal marker, or one of :data:`OPEN_CONNECTORS` (``روی``/``خط``
+    for a BP ratio, ``تا`` for a numeric range, ``بر`` for a per-unit rate)
+    directly after number words: the grammar consumed a value and was still
+    waiting for the continuation when the tokens ran out.  Used at forced
+    VAD/ASR segment boundaries, where ``سی و | پنج`` must not be parsed as two
+    complete (wrong) values, and ``صد و بیست روی | هشتاد`` must not be emitted
+    as a bare systolic reading.
     """
     words = text.split()
     end = len(words)
     index = end
     while index > 0:
         key = match_key(words[index - 1])
-        if key in _VALUE_WORDS or key in SCALES or key in (CONNECTOR, DECIMAL_MARKER, HALF):
+        if (key in _VALUE_WORDS or key in SCALES
+                or key in (CONNECTOR, DECIMAL_MARKER, HALF)
+                or key in OPEN_CONNECTORS):
             index -= 1
             continue
         break
@@ -193,7 +203,7 @@ def open_number_tail(text: str) -> str:
     if len(span) < 2:
         return ""
     last = match_key(span[-1])
-    continued = last in (CONNECTOR, DECIMAL_MARKER)
+    continued = last in (CONNECTOR, DECIMAL_MARKER) or last in OPEN_CONNECTORS
     has_value = any(
         match_key(word) in _VALUE_WORDS or match_key(word) in SCALES for word in span[:-1]
     )
@@ -211,10 +221,16 @@ def leading_number_span(text: str) -> str:
     index = 0
     while index < len(words):
         key = match_key(words[index])
-        if key in _VALUE_WORDS or key in SCALES or key in (CONNECTOR, DECIMAL_MARKER, HALF):
+        if (key in _VALUE_WORDS or key in SCALES
+                or key in (CONNECTOR, DECIMAL_MARKER, HALF)
+                or (index and key in OPEN_CONNECTORS)):
             index += 1
             continue
         break
+    # A trailing open connector belongs to the *next* continuation, not this
+    # leading run; keeping it here would re-open a phrase that already closed.
+    while index and match_key(words[index - 1]) in OPEN_CONNECTORS:
+        index -= 1
     return " ".join(words[:index])
 
 

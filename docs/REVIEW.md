@@ -193,3 +193,197 @@ non-dose negative values are no longer judged in one layer but not the other).
   startup error are pinned in `tests/test_second_pass.py`. Real NeMo
   checkpoint execution remains impossible here (weights/NeMo absent) and is
   still declared unverified below.
+
+## Fifth pass: migration to Shenava Koochik v1.5 (CTC default, RNNT optional)
+
+### Why v1.5
+
+The publisher's model card states that v1.5 keeps the v1.0 CTC head **bit
+identical** (the encoder was frozen during the corrective finetune) and repairs
+the RNNT head, which in v1.0 was unusable — a tokenizer/blank misalignment made
+greedy transducer decoding loop. Their reported figures on *their* benchmark
+with *their* normalizer are CTC 8.12% (unchanged from v1.0) and RNNT 9.50%
+(from 4398%). Two consequences shaped this migration:
+
+1. **Migrating cannot regress CTC.** The head this application deploys is the
+   same tensor set it was already running, so v1.5 is a drop-in for the
+   production path and the existing cache-aware streaming adapter applies
+   unchanged.
+2. **RNNT is worth having but is not better.** On the publisher's own numbers
+   RNNT is behind CTC. It is therefore added as a *selectable* path for
+   benchmarking and controlled experiments, not as a replacement, and the
+   default stays CTC.
+
+No accuracy claim is made here. This repository measured nothing on real audio
+(see *Not verified* below); `tools/evaluate_audio.py` exists precisely so that
+whoever has the checkpoint and a corpus can measure it.
+
+### CTC vs RNNT architecture
+
+```
+microphone → adaptive VAD → bounded queue → selected v1.5 head
+   ├── CTC  (production, default) → cache-aware stream → stabilizer
+   │        → endpoint CTC second pass (greedy | beam + reviewed hotwords)
+   └── RNNT (experimental)        → cache-aware stream → stabilizer
+            → endpoint RNNT re-decode
+   → deterministic Persian normalization → terminology / number grammar
+   → plausibility review flags → overlay / injection / optional persistence
+```
+
+The two heads are **never cross-run** in the realtime app: a streaming CTC
+utterance is only ever re-decoded with CTC, and a streaming RNNT utterance only
+with RNNT. Cross-head comparison happens exclusively in the offline evaluator.
+
+`rnnt_stream.py` adds **no transducer algorithm**. Decoding is the model's own
+prediction network, joint, tokenizer and blank, reached through
+`change_decoding_strategy(decoder_type="rnnt")` and `conformer_stream_step`;
+the module contributes only realtime plumbing and the capability check. The
+RNNT stream subclasses the tested CTC frontend adapter, so frame accounting is
+literally the same code — pinned by `tests/test_frontend_v15.py`, which drives
+both streams over the same audio and compares the encoder windows.
+
+Reviewed hotword biasing applies to CTC emissions and is **not** transferred to
+the transducer; `RNNTSecondPass.decode_with_context` returns `None` on purpose.
+
+### Capability probing: no silent fallback
+
+`NeMoASR._probe_capabilities` inspects the *loaded* model — never the model
+name — and reports `ModelCapabilities`: model class, which heads exist,
+streaming contexts, frontend sample rate, vocabulary size and both blank ids.
+`_validate_startup` then refuses, at startup and with the available
+alternatives named:
+
+| Requested | Missing | Result |
+|---|---|---|
+| any | frontend ≠ 16 kHz | `CapabilityUnavailable` |
+| `ctc` | CTC head | `CapabilityUnavailable`, lists available heads |
+| `rnnt` | prediction net/joint | `CapabilityUnavailable`, suggests `--decoder ctc` or a hybrid checkpoint |
+| `rnnt` | tokenizer/vocabulary | `CapabilityUnavailable` |
+| `rnnt` | resolvable blank id | `CapabilityUnavailable` |
+| any | requested `[70, right_context]` | `CapabilityUnavailable`, lists supported contexts |
+| `require_streaming` | `conformer_stream_step` | `CapabilityUnavailable` |
+
+Head selection goes through the checkpoint's own
+`change_decoding_strategy`; a single-head checkpoint that rejects the
+`decoder_type` keyword fails for RNNT rather than quietly decoding CTC.
+Checkpoints without streaming metadata keep the documented endpoint-only
+fallback (still rejected under `require_streaming`).
+
+### Bugs fixed
+
+| Bug | Fix |
+|---|---|
+| **CTC beam search ignored `beam_size`.** `CTCBeamDecoder._prune` kept `2 * 64` states regardless of the configured width, so `beam_size=4` ran a beam of 128 — far slower than configured and not the decoder the configuration described | Replaced with a correct CTC **prefix** beam: per-prefix blank/non-blank log probabilities, stable `logaddexp` throughout, deterministic lexicographic tie-breaking, and pruning to exactly `beam_size` prefixes. `tests/test_ctc_beam.py` pins that the configured width is the real width and that a wider beam never scores worse |
+| Contextual bias could be applied to a token with no acoustic support, letting a hotword be forced into unrelated speech | Added a bounded acoustic-safety gate (`hotword_acoustic_gate`, default 5 nats): bias applies only within that margin of the frame's best token. Tipping a near-tie still works; rescuing an absent token does not |
+| A forced segment boundary left a BP ratio (`… روی |`), a numeric range (`… تا |`) or a per-unit rate dangling, and the partial value was emitted as if complete | `OPEN_CONNECTORS` extends the open-number-tail protection to these connectors; `leading_number_span` no longer absorbs a trailing connector into the closed run |
+| `pipeline._emit` logged the spoken number words of a protected phrase at WARNING — clinical content in the log file | Logs the word count only; the `forced_boundary` review flag carries the signal |
+| Overload was only observable by reading log lines | Explicit counters: `queue_overflows`, `dropped_items`, `dropped_audio_seconds`, `discontinuities`, `decoder_errors`, `forced_splits`, `vad_dropouts`, plus the existing second-pass runs/rewrites/fallbacks, all in `get_statistics()` and the shutdown summary |
+
+### Adaptive VAD
+
+Fixed thresholds were replaced by a bounded noise-floor estimate using
+**minimum statistics** over a bounded window of non-speech frames — not a
+mean. That distinction is the safety property: syllable-modulated quiet speech
+dips between syllables, so its minimum stays near the true background, while
+steady room noise does not dip and correctly raises the floor. Only frames seen
+in SILENCE and below the current onset feed the window, so an open segment can
+never raise the bar under the speaker.
+
+Adaptation is one-directional and clamped. While the measured floor sits below
+the configured `vad_offset_rms`, or before `noise_init_ms` of background has
+been measured, the configured static thresholds are used verbatim — a quiet
+room, a quiet speaker and a speaker who starts talking immediately all behave
+exactly as they did before this change. Hysteresis, minimum speech/silence
+durations, bounded pre-roll and the hard segment cap are untouched.
+
+Documented limit: noise already above the configured onset reads as speech,
+because the floor is only measured in silence. That case needs measured
+thresholds; the adaptive layer refines tuning rather than replacing it. No
+threshold in this repository was fitted to a synthetic signal —
+`tests/test_vad_adaptive.py` asserts segmentation outcomes and clamp bounds,
+never a particular RMS value.
+
+### Terminology
+
+`terminology.json` grew from 75 to 144 reviewed rules: common medications
+(including high-risk anticoagulants), procedures, imaging, lab tests, routes,
+frequencies and disease/symptom names, with Persian phonetic variants where a
+reviewer identified a realistic confusion. This is data, not logic — the
+Aho-Corasick matcher, leftmost/longest matching, priority handling, punctuation
+boundaries, offsets, protected spans and deterministic conflict detection are
+unchanged, and the conflict detector caught and rejected four collisions during
+this expansion (`سی تی اسکن`, `ضربان قلب`, `تعداد تنفس`, `خوراکی`).
+
+Frequency and route phrases are recognised with an **identity canonical**:
+abbreviating a dosing frequency changes clinical reading and is not covered by
+the configured output policy, so they participate in matching and hotwords
+without rewriting the text. Nothing is auto-promoted from ASR output; the human
+review workflow is unchanged.
+
+Decoder bias remains conservative: units are never boosted, generic anatomy
+needs an explicit reviewed `bias`, reviewed aliases and phonetic variants are
+opt-in and biased at half the rule's boost, Latin/punctuation-only aliases are
+never hotwords, every bias is capped at `MAX_HOTWORD_BIAS`, and the active list
+is bounded by `hotword_max`.
+
+### Evaluation
+
+`tools/evaluate_audio.py` is new and separate from runtime code (it imports the
+pipeline; nothing imports it). It takes JSONL/CSV metadata plus 16 kHz mono
+WAVs — mismatched audio is an error row, never a silent resample — and reports
+WER, CER, S/I/D counts, medical-term, drug-name, dose/number, BP and
+abbreviation error rates, forced-boundary error rate, mean/max latency and RTF.
+`--system` selects `v1.0-ctc`, `v1.5-ctc` or `v1.5-rnnt`; `--compare` prints a
+table across saved reports.
+
+Reports separate error sources rather than collapsing them: `acoustic`
+(reference vs raw decoder output), `normalization` (raw vs normalised),
+`terminology`, `numbers`, `endpointing`. The pre-existing
+`tools/evaluate_medical.py` is unchanged and remains a *text* regression score
+— it is not evidence of recognition accuracy, and both tools say so in their
+output.
+
+### Benchmark status
+
+**No benchmark was run.** The v1.5 weights, NeMo and a GPU are all absent from
+this environment. Every number quoted above is the publisher's, from their
+model card. The measurement tooling, the corpus format and the comparison
+command exist and are unit-tested; the measurement itself is the reader's to
+perform.
+
+### Not verified with the real checkpoint or hardware
+
+- Any execution of `Reza2kn/Shenava-Koochik-v1.5`: no weights, no NeMo, no GPU.
+- Therefore: real WER/CER/RTF for v1.5 CTC or RNNT, and any comparison with v1.0.
+- Whether the installed NeMo build's `conformer_stream_step` dispatches to the
+  RNNT head exactly as the CTC path does for this checkpoint. The code probes
+  and fails loudly if the required objects are missing, but the streaming RNNT
+  path has only been exercised against test doubles.
+- The real tokenizer/blank layout of the `ve_tok_v4` vocabulary; the blank probe
+  reads the loaded objects and raises when it finds nothing.
+- CUDA-graph streaming: the configuration flag exists and defaults off; eager
+  execution is the reference implementation and nothing was profiled.
+- Microphone capture, overlay rendering, keyboard injection and clipboard
+  behaviour on a real desktop.
+- Recognition behaviour of the expanded terminology in actual dictation — the
+  additions were reviewed as data and are covered by matcher tests only.
+
+### Checks executed in the fifth pass
+
+- `.venv/bin/pytest -q` — 547 passed (from 394; 153 new tests across
+  `test_ctc_beam.py`, `test_rnnt_path.py`, `test_vad_adaptive.py`,
+  `test_medical_numbers.py`, `test_frontend_v15.py`, `test_engine_stats.py`,
+  `test_config_v15.py`, `test_evaluate_audio.py`, plus the rewritten capability
+  tests in `test_asr_backend.py`).
+- `python -m compileall` on the package and tools: clean.
+- `python main.py --self-test`: exit 0.
+- `python tools/evaluate_medical.py`: post-processing WER/CER 0,
+  forced-boundary 0, essential 0 — unchanged by this pass.
+- `python main.py --help`: the new switches (`--decoder ctc|rnnt|auto`,
+  `--beam-size`, `--hotword-aliases`, `--hotword-phonetic`,
+  `--no-adaptive-vad`) are documented.
+- Log audit: one clinical-content leak found and fixed (see *Bugs fixed*); the
+  remaining message with a `%s` payload logs level metrics, not transcripts.
+
+**Default head: CTC.** RNNT must be requested explicitly and fails loudly when
+the checkpoint cannot provide it.
