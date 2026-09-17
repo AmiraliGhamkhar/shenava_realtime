@@ -17,11 +17,18 @@ Rules that keep this safe:
 """
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 import numpy as np
+
+NEG_INF = float("-inf")
+# Acoustic-safety gate for contextual bias (nats below the frame's best token).
+DEFAULT_BIAS_ACOUSTIC_GATE = 5.0
+# Non-blank tokens this far below the frame best contribute no usable mass.
+FRAME_TOKEN_CUTOFF = 12.0
 
 
 @dataclass(frozen=True)
@@ -75,20 +82,44 @@ class GreedySecondPass(SecondPassDecoder):
         return text or None
 
 
-class CTCBeamDecoder:
-    """Deterministic CTC beam search with optional token-level log-prob bias.
+def _logaddexp(a: float, b: float) -> float:
+    """Numerically stable log(exp(a)+exp(b)) without a numpy scalar round-trip."""
+    if a == NEG_INF:
+        return b
+    if b == NEG_INF:
+        return a
+    if a < b:
+        a, b = b, a
+    return a + math.log1p(math.exp(b - a))
 
-    ``emissions`` must be log-probabilities of shape [T, V] (apply
-    log-softmax upstream).  A token bias is added while the path so far is a
-    prefix of a hotword — the only contextual biasing this module supports;
-    there is no language model and no fuzzy matching.  Ties break on the
-    lexicographically smaller token sequence, so output is deterministic.
+
+class CTCBeamDecoder:
+    """Deterministic CTC prefix-beam search with optional token log-prob bias.
+
+    ``emissions`` must be log-probabilities of shape [T, V] (apply log-softmax
+    upstream).  This is the standard prefix beam: each surviving prefix carries
+    two log probabilities — the mass ending in blank and the mass ending in a
+    non-blank token — which are merged when ranking.  Everything is computed in
+    log space; ``beam_size`` is the *actual* number of prefixes retained per
+    frame (there is no hidden pruning floor).
+
+    ``token_bias(prefix, token) -> float`` adds a bounded log-prob boost while
+    the path continues a hotword prefix.  ``bias_acoustic_gate`` is the
+    acoustic-safety gate: a bias is only applied when the biased token is
+    within that many nats of the frame's best token, so contextual biasing can
+    tip a near-tie but cannot force a medical term into unrelated speech.
+
+    Ties break on the lexicographically smaller token sequence, so the output
+    is deterministic for identical input.
     """
 
-    def __init__(self, beam_size: int = 4) -> None:
+    def __init__(self, beam_size: int = 4, bias_acoustic_gate: float = DEFAULT_BIAS_ACOUSTIC_GATE) -> None:
         if not 1 <= int(beam_size) <= 32:
             raise ValueError("beam_size must be within [1, 32]")
+        if not 0.0 < float(bias_acoustic_gate) <= 20.0:
+            raise ValueError("bias_acoustic_gate must be within (0, 20] nats")
         self.beam_size = int(beam_size)
+        self.bias_acoustic_gate = float(bias_acoustic_gate)
 
     def decode(
         self,
@@ -99,49 +130,69 @@ class CTCBeamDecoder:
         emissions = np.ascontiguousarray(emissions, dtype=np.float64)
         if emissions.ndim != 2 or emissions.shape[1] < 2:
             raise ValueError("emissions must have shape [T, V] with V >= 2")
-        if not 0 <= int(blank) < emissions.shape[1]:
+        blank = int(blank)
+        if not 0 <= blank < emissions.shape[1]:
             raise ValueError("blank index out of range")
 
-        # State: (sequence, last_token) -> log-prob.  Two entries per sequence:
-        # one where the previous frame was blank, one where it was not.
-        states: dict[tuple[tuple[int, ...], int], float] = {((), -1): 0.0}
+        # prefix -> [log p(ending in blank), log p(ending in non-blank)]
+        beams: dict[tuple[int, ...], list[float]] = {(): [0.0, NEG_INF]}
+        vocab = emissions.shape[1]
         for row in emissions:
-            next_states: dict[tuple[tuple[int, ...], int], float] = {}
-            for (seq, last), logp in states.items():
-                # Emit blank: sequence unchanged.
-                key = (seq, blank)
-                next_states[key] = max(next_states.get(key, -np.inf), logp + row[blank])
-                # Emit each non-blank token.
-                for v in range(row.shape[0]):
-                    if v == blank:
-                        continue
-                    new_seq = seq + (v,) if last != v else seq
-                    # The bias keys on the prefix *before* this token.
-                    boost = token_bias(seq, v) if token_bias is not None else 0.0
-                    key = (new_seq, v)
-                    next_states[key] = max(
-                        next_states.get(key, -np.inf), logp + row[v] + boost
-                    )
-            states = self._prune(next_states)
-            if not states:
+            frame_best = float(row.max())
+            # Only tokens with real acoustic mass can extend a prefix; this
+            # bounds the work per frame without changing the retained beam.
+            candidates = self._frame_tokens(row, blank, frame_best, vocab)
+            next_beams: dict[tuple[int, ...], list[float]] = {}
+            for prefix, (p_blank, p_nonblank) in beams.items():
+                total = _logaddexp(p_blank, p_nonblank)
+                last = prefix[-1] if prefix else -1
+                # 1) blank: the prefix is unchanged, mass moves to p_blank.
+                entry = next_beams.setdefault(prefix, [NEG_INF, NEG_INF])
+                entry[0] = _logaddexp(entry[0], total + float(row[blank]))
+                for token in candidates:
+                    logp = float(row[token])
+                    boost = 0.0
+                    if token_bias is not None and logp >= frame_best - self.bias_acoustic_gate:
+                        boost = float(token_bias(prefix, token))
+                    logp += boost
+                    if token == last:
+                        # 2a) repeat without a blank: collapses into the prefix.
+                        entry = next_beams.setdefault(prefix, [NEG_INF, NEG_INF])
+                        entry[1] = _logaddexp(entry[1], p_nonblank + logp)
+                        # 2b) repeat after a blank: a genuine second emission.
+                        extended = next_beams.setdefault(prefix + (token,), [NEG_INF, NEG_INF])
+                        extended[1] = _logaddexp(extended[1], p_blank + logp)
+                    else:
+                        extended = next_beams.setdefault(prefix + (token,), [NEG_INF, NEG_INF])
+                        extended[1] = _logaddexp(extended[1], total + logp)
+            beams = self._prune(next_beams)
+            if not beams:
                 break
-        best_logp = max(logp for _, logp in states.items())
-        sequences = sorted({
-            seq for (seq, _last), logp in states.items() if logp == best_logp
-        })
-        return list(sequences[0]), float(best_logp)
+        if not beams:
+            return [], float(NEG_INF)
+        best = min(
+            beams.items(),
+            key=lambda item: (-_logaddexp(item[1][0], item[1][1]), item[0]),
+        )
+        return list(best[0]), float(_logaddexp(best[1][0], best[1][1]))
 
-    @staticmethod
-    def _prune(states: dict[tuple[tuple[int, ...], int], float]) -> dict:
-        if len(states) <= 2 * 64:
-            return states
-        # Keep the strongest state per sequence, then keep the best sequences.
-        by_seq: dict[tuple[int, ...], tuple[int, float]] = {}
-        for (seq, last), logp in states.items():
-            if seq not in by_seq or logp > by_seq[seq][1]:
-                by_seq[seq] = (last, logp)
-        ranked = sorted(by_seq.items(), key=lambda kv: (-kv[1][1], kv[0]))[: 2 * 64]
-        return {(seq, last): logp for seq, (last, logp) in ranked}
+    def _frame_tokens(self, row, blank: int, frame_best: float, vocab: int) -> list[int]:
+        """Non-blank tokens worth expanding this frame (deterministic order)."""
+        keep = np.flatnonzero(row >= frame_best - FRAME_TOKEN_CUTOFF)
+        tokens = [int(t) for t in keep if int(t) != blank]
+        if not tokens:
+            tokens = [t for t in range(vocab) if t != blank]
+        return tokens
+
+    def _prune(self, beams: dict[tuple[int, ...], list[float]]) -> dict:
+        """Keep exactly ``beam_size`` prefixes, ranked by total log-prob."""
+        if len(beams) <= self.beam_size:
+            return beams
+        ranked = sorted(
+            beams.items(),
+            key=lambda item: (-_logaddexp(item[1][0], item[1][1]), item[0]),
+        )[: self.beam_size]
+        return dict(ranked)
 
 
 def hotword_token_bias(
@@ -179,12 +230,13 @@ class BeamSecondPass(SecondPassDecoder):
         blank_index: int,
         beam_size: int = 4,
         greedy: Optional[SecondPassDecoder] = None,
+        bias_acoustic_gate: float = DEFAULT_BIAS_ACOUSTIC_GATE,
     ) -> None:
         self._emissions = emissions_fn
         self._tokenize = tokenize
         self._decode_tokens = decode_tokens
         self._blank = int(blank_index)
-        self.beam = CTCBeamDecoder(beam_size)
+        self.beam = CTCBeamDecoder(beam_size, bias_acoustic_gate)
         self._greedy = greedy or GreedySecondPass(lambda a: ("", 0.0))
 
     def decode_greedy(self, utterance: SecondPassUtterance) -> Optional[str]:

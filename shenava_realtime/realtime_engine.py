@@ -69,7 +69,7 @@ class RealtimeASR:
         self.audio_capture.on_speech_start = self._on_speech_start
         self.audio_capture.on_speech_end = self._on_speech_end
         self.audio_capture.on_audio = self._on_audio
-        self.audio_capture.on_discontinuity = lambda: self._enqueue((_CLEAR,))
+        self.audio_capture.on_discontinuity = self._on_discontinuity
 
         postprocessor = PostProcessor(self.config.postprocess)
         decoder = make_decoder(self.backend, self.asr_config, self.config.audio.sample_rate)
@@ -84,6 +84,8 @@ class RealtimeASR:
                     default_rules(),
                     specialty=self.asr_config.hotword_specialty,
                     max_hotwords=self.asr_config.hotword_max,
+                    use_aliases=self.asr_config.hotword_use_aliases,
+                    use_phonetic_variants=self.asr_config.hotword_use_phonetic_variants,
                 )
                 logger.info(
                     "second pass hotwords: %d (specialty: %s)",
@@ -114,12 +116,22 @@ class RealtimeASR:
         self._partial_text = ""
         self._needs_separator = False
 
+        # Explicit realtime counters. Every one is incremented at the single
+        # place the event happens, so overload is measurable rather than
+        # inferred from log lines.
         self.stats: Dict[str, float] = {
             "utterances": 0,
             "decodes": 0,
             "decode_seconds": 0.0,
             "audio_seconds": 0.0,
             "average_confidence": 0.0,
+            "queue_overflows": 0,       # bounded ASR queue hit its limit
+            "dropped_items": 0,         # work items discarded by an overflow
+            "dropped_audio_seconds": 0.0,
+            "discontinuities": 0,       # audio gaps: decoding never spans them
+            "decoder_errors": 0,
+            "forced_splits": 0,
+            "vad_dropouts": 0,
         }
 
     # ------------------------------------------------------------------ #
@@ -201,6 +213,12 @@ class RealtimeASR:
     def _on_speech_end(self, duration: float, forced: bool = False) -> None:
         self._enqueue((_END, duration, forced))
 
+    def _on_discontinuity(self) -> None:
+        """A capture gap: abort the utterance, never join audio across it."""
+        self.stats["discontinuities"] += 1
+        self.stats["vad_dropouts"] += 1
+        self._enqueue((_CLEAR,))
+
     def _enqueue(self, item: Optional[tuple]) -> None:
         with self._enqueue_lock:
             try:
@@ -208,11 +226,18 @@ class RealtimeASR:
             except queue.Full:
                 logger.error("ASR overrun: aborting incomplete utterance (audio discontinuity)")
                 self.stats["overruns"] = self.stats.get("overruns", 0) + 1
+                self.stats["queue_overflows"] += 1
+                self.stats["discontinuities"] += 1
                 while True:
                     try:
-                        self._queue.get_nowait()
+                        dropped = self._queue.get_nowait()
                     except queue.Empty:
                         break
+                    self.stats["dropped_items"] += 1
+                    if dropped and dropped[0] == _AUDIO:
+                        self.stats["dropped_audio_seconds"] += (
+                            len(dropped[1]) / float(self.config.audio.sample_rate)
+                        )
                 # Never continue cached inference across missing audio. The
                 # next START reopens the pipeline; orphan audio is ignored.
                 if item is None:
@@ -237,6 +262,7 @@ class RealtimeASR:
             except Exception:
                 logger.exception("error while handling %s; aborting utterance", item[0] if item else item)
                 self.stats["errors"] = self.stats.get("errors", 0) + 1
+                self.stats["decoder_errors"] += 1
                 self.pipeline.abort()
                 self._partial_text = ""
         logger.debug("ASR worker stopped")
@@ -255,7 +281,7 @@ class RealtimeASR:
             forced = bool(item[2]) if len(item) > 2 else False
             if forced:
                 # Segment-cap cut, not a natural phrase boundary.
-                self.stats["forced_splits"] = self.stats.get("forced_splits", 0) + 1
+                self.stats["forced_splits"] += 1
             self.stats["audio_seconds"] += duration
             self.stats["utterances"] += 1
             deltas = self.pipeline.end_utterance(forced=forced)
@@ -329,6 +355,7 @@ class RealtimeASR:
         return {
             **self.stats,
             "decoder": getattr(self.pipeline.decoder, "name", "unknown"),
+            "decoder_head": self.asr_config.resolved_decoder,
             "second_pass": second_pass.name if second_pass is not None else "off",
             "second_pass_stats": self.pipeline.second_pass_stats,
             "total_audio_duration": self.stats["audio_seconds"],

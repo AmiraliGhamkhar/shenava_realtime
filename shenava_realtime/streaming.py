@@ -181,16 +181,29 @@ def make_second_pass(
 ) -> Optional[SecondPassDecoder]:
     """Build the optional utterance-end second pass from configuration.
 
-    ``off`` -> None.  ``greedy`` -> one offline greedy re-decode via the
-    existing backend (works with any backend that has ``transcribe``).
-    ``context`` -> CTC beam + hotword biasing via the backend's own
-    ``build_second_pass`` (NeMo); a missing capability is a startup error,
-    never a silent mode switch.
+    The second pass is **decoder-aware**: a streaming CTC utterance is only
+    re-decoded with CTC, and a streaming RNNT utterance only with RNNT.  The
+    two heads are never cross-run here (that belongs to the offline benchmark
+    tool).
+
+    ``off`` -> None.  ``greedy`` -> one offline re-decode with the selected
+    head via the backend.  ``context`` -> CTC beam + hotword biasing, or the
+    RNNT endpoint re-decode when the RNNT head is selected, built by the
+    backend's own ``build_second_pass``; a missing capability is a startup
+    error, never a silent mode switch.
     """
     config = asr_config or ASRConfig()
     config.__post_init__()
     if config.second_pass == "off":
         return None
+    if config.resolved_decoder == "rnnt":
+        factory = getattr(backend, "build_second_pass", None)
+        if not callable(factory):
+            raise RuntimeError(
+                "decoder=rnnt requires a backend providing build_second_pass() "
+                "(the NeMo backend); use --decoder ctc or --second-pass off"
+            )
+        return factory(config)
     if config.second_pass == "context":
         # A specifically requested capability that is absent is a startup
         # error, never a silent degrade to streaming-only decoding.

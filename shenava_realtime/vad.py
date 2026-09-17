@@ -18,9 +18,10 @@ returns events, which makes the transitions directly unit-testable.
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import Deque, List, Optional
 
 import numpy as np
 
@@ -46,7 +47,33 @@ class VADConfig:
     pre_speech_ms: int = 320
     max_speech_s: float = 20.0
 
+    # Adaptive noise floor (bounded).  ``onset_rms``/``offset_rms`` remain the
+    # lower bound; the adaptive thresholds are noise_floor * snr, clamped into
+    # [configured threshold, configured threshold * adaptive_max_gain].
+    adaptive: bool = True
+    noise_init_ms: int = 500        # quiet audio used to seed the floor
+    noise_halflife_ms: int = 2000   # decay of the floor estimate in silence
+    onset_snr: float = 4.0
+    offset_snr: float = 2.0
+    adaptive_max_gain: float = 8.0
+
     def __post_init__(self) -> None:
+        if self.adaptive:
+            adaptive_values = (self.onset_snr, self.offset_snr,
+                               self.adaptive_max_gain, self.noise_init_ms,
+                               self.noise_halflife_ms)
+            if not all(math.isfinite(v) for v in adaptive_values):
+                raise ValueError("Adaptive VAD settings must be finite")
+            if self.onset_snr <= 0 or self.offset_snr <= 0:
+                raise ValueError("VAD SNR factors must be positive")
+            if self.offset_snr > self.onset_snr:
+                raise ValueError("offset_snr must be <= onset_snr for hysteresis to work")
+            if not 1.0 <= self.adaptive_max_gain <= 64.0:
+                raise ValueError("adaptive_max_gain must be within [1, 64]")
+            if not 0 < self.noise_init_ms <= 5000:
+                raise ValueError("noise_init_ms must be within (0, 5000] ms")
+            if not 0 < self.noise_halflife_ms <= 60000:
+                raise ValueError("noise_halflife_ms must be within (0, 60000] ms")
         values = (self.onset_rms, self.offset_rms, self.max_speech_s,
                   self.min_speech_ms, self.min_silence_ms, self.pre_speech_ms)
         if not all(math.isfinite(v) for v in values):
@@ -80,6 +107,10 @@ class VADConfig:
         return self._ms_to_samples(self.min_silence_ms)
 
     @property
+    def noise_init_samples(self) -> int:
+        return self._ms_to_samples(self.noise_init_ms)
+
+    @property
     def max_speech_samples(self) -> int:
         return max(self.min_speech_samples + 1, int(round(self.sample_rate * self.max_speech_s)))
 
@@ -93,6 +124,23 @@ class VADEvent:
     # True only for a segment-cap cut (keep_speaking): the endpoint is an
     # artifact of the 20 s limit, not a natural phrase boundary.
     forced: bool = False
+
+
+# Nominal frame used to size the noise window when the caller's block size is
+# unknown; the window length is bounded in frames either way.
+_NOMINAL_FRAME_MS = 64.0
+# Hard bound on the retained window, so memory cannot grow with session length.
+MAX_NOISE_WINDOW_FRAMES = 256
+
+
+def _window_frames(config: "VADConfig") -> int:
+    """Window length in frames: ``noise_halflife_ms`` worth, bounded."""
+    frames = int(round(config.noise_halflife_ms / _NOMINAL_FRAME_MS))
+    return max(2, min(MAX_NOISE_WINDOW_FRAMES, frames))
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return low if value < low else (high if value > high else value)
 
 
 def rms(frame: np.ndarray) -> float:
@@ -115,6 +163,14 @@ class EnergyVAD:
         self._silence_samples = 0
         self._speech_samples = 0
         self.last_rms: float = 0.0
+        # Adaptive noise floor: bounded window of recent non-speech frame
+        # levels; the floor is their minimum (see _update_noise_floor).
+        self._noise_window: Deque[float] = deque()
+        self._noise_window_frames = _window_frames(self.config)
+        self._noise_floor: float = self.config.offset_rms / max(1e-9, self.config.offset_snr)
+        self._noise_samples = 0
+        self.onset_threshold: float = self.config.onset_rms
+        self.offset_threshold: float = self.config.offset_rms
 
     # ------------------------------------------------------------------ #
     def reset(self) -> None:
@@ -126,6 +182,11 @@ class EnergyVAD:
         self._silence_samples = 0
         self._speech_samples = 0
         self.last_rms = 0.0
+        self._noise_window.clear()
+        self._noise_floor = self.config.offset_rms / max(1e-9, self.config.offset_snr)
+        self._noise_samples = 0
+        self.onset_threshold = self.config.onset_rms
+        self.offset_threshold = self.config.offset_rms
 
     @property
     def in_speech(self) -> bool:
@@ -149,8 +210,9 @@ class EnergyVAD:
         frame = frame.copy()
         level = rms(frame)
         self.last_rms = level
+        self._update_noise_floor(level, frame.size)
         is_speech = level >= (
-            self.config.onset_rms if self.state is VADState.SILENCE else self.config.offset_rms
+            self.onset_threshold if self.state is VADState.SILENCE else self.offset_threshold
         )
         size = frame.size
         events: List[VADEvent] = []
@@ -202,6 +264,65 @@ class EnergyVAD:
             self.reset()
             return []
         return [self._end_speech()]
+
+    # ------------------------------------------------------------------ #
+    def _update_noise_floor(self, level: float, size: int) -> None:
+        """Track the local noise floor and derive bounded onset/offset levels.
+
+        The estimate is *minimum statistics*: the floor is the smallest frame
+        level seen in a bounded recent window of non-speech frames, not their
+        average.  That distinction is what makes the detector safe for a quiet
+        speaker — modulated speech dips between syllables, so its minimum stays
+        near the true background, while steady room noise does not dip and
+        correctly raises the floor.
+
+        Only frames observed in SILENCE feed the window, so an open segment can
+        never drag the floor up under the speaker.  Until ``noise_init_ms`` of
+        background has been measured — or while the floor is below the
+        configured static offset — the configured thresholds are used
+        unchanged, so a quiet room, a quiet speaker and a speaker who starts
+        talking immediately all behave exactly as before.  Derived thresholds are clamped into ``[configured, configured *
+        adaptive_max_gain]``: bounded, and identical to the static detector in
+        clean audio.
+        """
+        config = self.config
+        if not config.adaptive:
+            return
+        if self.state is VADState.SILENCE:
+            self._noise_window.append(max(level, 1e-6))
+            self._noise_samples += size
+            while len(self._noise_window) > self._noise_window_frames:
+                self._noise_window.popleft()
+            self._noise_floor = min(self._noise_window)
+        # Adaptation is one-directional and only engages in a genuinely noisy
+        # room: while the measured floor sits below the configured static
+        # offset the static thresholds are used verbatim.  A quiet room (or an
+        # unmeasured one) therefore behaves exactly like the previous
+        # detector, and a quiet speaker can never be raised out of range by
+        # adaptation — only real background noise moves the thresholds, and
+        # only upward, within the configured clamp.
+        if (self._noise_samples < config.noise_init_samples
+                or self._noise_floor <= config.offset_rms):
+            self.onset_threshold = config.onset_rms
+            self.offset_threshold = config.offset_rms
+            return
+        self.onset_threshold = _clamp(
+            self._noise_floor * config.onset_snr,
+            config.onset_rms,
+            config.onset_rms * config.adaptive_max_gain,
+        )
+        self.offset_threshold = _clamp(
+            self._noise_floor * config.offset_snr,
+            config.offset_rms,
+            config.offset_rms * config.adaptive_max_gain,
+        )
+        if self.offset_threshold > self.onset_threshold:
+            self.offset_threshold = self.onset_threshold
+
+    @property
+    def noise_floor(self) -> float:
+        """Current noise-floor estimate (diagnostics/tests)."""
+        return self._noise_floor
 
     # ------------------------------------------------------------------ #
     def _push_preroll(self, frame: np.ndarray) -> None:

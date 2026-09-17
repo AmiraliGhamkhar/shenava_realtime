@@ -29,6 +29,9 @@ BIAS_BY_CATEGORY = {
     "medical_term": 0.25,
 }
 MAX_BIAS = MAX_HOTWORD_BIAS
+# Reviewed aliases/phonetic variants are weaker evidence than the reviewed
+# spoken form and are biased proportionally lower when enabled.
+VARIANT_BIAS_FACTOR = 0.5
 # Units are rendered outputs (%, °), not clinical vocabulary to recover.
 # Anatomy and other generic categories have no default boost: they appear in
 # the hotword list only through an explicit, reviewed ``rule.bias``.
@@ -50,6 +53,8 @@ def build_hotwords(
     *,
     specialty: Optional[str] = None,
     max_hotwords: int = 64,
+    use_aliases: bool = False,
+    use_phonetic_variants: bool = False,
 ) -> list[Hotword]:
     """Build the active hotword list from terminology rules.
 
@@ -57,6 +62,12 @@ def build_hotwords(
     plus the general set; ``None`` uses only the general set — the whole
     vocabulary is never enabled indiscriminately.  Selection is deterministic:
     highest priority first, then rule id.
+
+    Reviewed spoken forms are always eligible.  Reviewed ``aliases`` and
+    ``phonetic_variants`` participate only when explicitly enabled, and are
+    biased at half the rule's boost: they are the weaker evidence of the three
+    and must not outrank the reviewed spoken form.  Nothing is generated: every
+    phrase comes from ``terminology.json``.
     """
     if not 1 <= int(max_hotwords) <= 512:
         raise ValueError("max_hotwords must be within [1, 512]")
@@ -70,13 +81,30 @@ def build_hotwords(
     selected_rules.sort(key=lambda item: (-item[0].priority, item[0].id))
 
     hotwords: list[Hotword] = []
-    seen: set[tuple[str, float]] = set()
+    seen: set[str] = set()
     for rule, bias in selected_rules:
-        for form in rule.spoken_forms:
-            key = (form, bias)
-            if form and key not in seen:
-                seen.add(key)
-                hotwords.append(Hotword(form, bias))
-                if len(hotwords) >= max_hotwords:
-                    return hotwords
+        for phrase, phrase_bias in _phrases(rule, bias, use_aliases, use_phonetic_variants):
+            if not phrase or phrase in seen:
+                continue
+            seen.add(phrase)
+            hotwords.append(Hotword(phrase, min(MAX_BIAS, phrase_bias)))
+            if len(hotwords) >= max_hotwords:
+                return hotwords
     return hotwords
+
+
+def _phrases(rule: TerminologyRule, bias: float, use_aliases: bool,
+             use_phonetic_variants: bool) -> list[tuple[str, float]]:
+    """Eligible (phrase, bias) pairs for one rule, reviewed sources only."""
+    items = [(form, bias) for form in rule.spoken_forms]
+    if use_aliases:
+        items += [(alias, bias * VARIANT_BIAS_FACTOR) for alias in rule.aliases]
+    if use_phonetic_variants:
+        items += [(v, bias * VARIANT_BIAS_FACTOR) for v in rule.phonetic_variants]
+    # Latin/punctuation-only aliases (e.g. "CABG", "%") are rendered outputs,
+    # not spoken phrases: they are never decoder hotwords.
+    return [(phrase, value) for phrase, value in items if _is_spoken(phrase)]
+
+
+def _is_spoken(phrase: str) -> bool:
+    return any("\u0600" <= ch <= "\u06ff" for ch in phrase)

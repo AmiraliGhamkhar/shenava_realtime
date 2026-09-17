@@ -28,6 +28,7 @@ MODULES = [
     "shenava_realtime.realtime_engine",
     "shenava_realtime.audio_capture",
     "shenava_realtime.asr_backend",
+    "shenava_realtime.rnnt_stream",
     "shenava_realtime.injector.text_injector",
     "shenava_realtime.hotkeys.hotkey_manager",
     "shenava_realtime.utils",

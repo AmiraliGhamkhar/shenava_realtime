@@ -22,8 +22,12 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.0.nemo"
-DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.0"
+DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.5.nemo"
+DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.5"
+# Recognition heads the backend can select. "auto" resolves to the production
+# default (CTC) and is kept explicit so a config file can say so on purpose.
+DECODER_TYPES = ("ctc", "rnnt", "auto")
+DEFAULT_DECODER_TYPE = "ctc"
 
 
 class OutputMode(str, Enum):
@@ -132,6 +136,15 @@ class AudioConfig:
     vad_pre_speech_ms: int = 320
     vad_max_speech_s: float = 20.0
 
+    # Adaptive noise floor: onset/offset are derived from the measured floor
+    # and clamped into [threshold, threshold * vad_adaptive_max_gain].
+    vad_adaptive: bool = True
+    vad_noise_init_ms: int = 500
+    vad_noise_halflife_ms: int = 2000
+    vad_onset_snr: float = 4.0
+    vad_offset_snr: float = 2.0
+    vad_adaptive_max_gain: float = 8.0
+
     # Bounded capture queue: oldest chunk is dropped when the consumer stalls
     queue_max_chunks: int = 32
 
@@ -150,7 +163,11 @@ class AudioConfig:
         VADConfig(sample_rate=self.sample_rate, onset_rms=self.vad_onset_rms,
                   offset_rms=self.vad_offset_rms, min_speech_ms=self.vad_min_speech_ms,
                   min_silence_ms=self.vad_min_silence_ms, pre_speech_ms=self.vad_pre_speech_ms,
-                  max_speech_s=self.vad_max_speech_s)
+                  max_speech_s=self.vad_max_speech_s, adaptive=self.vad_adaptive,
+                  noise_init_ms=self.vad_noise_init_ms,
+                  noise_halflife_ms=self.vad_noise_halflife_ms,
+                  onset_snr=self.vad_onset_snr, offset_snr=self.vad_offset_snr,
+                  adaptive_max_gain=self.vad_adaptive_max_gain)
 
     @property
     def chunk_duration(self) -> float:
@@ -166,7 +183,9 @@ class ASRConfig:
         default_factory=lambda: _env("SHENAVA_MODEL_PATH") or str(DEFAULT_MODEL_FILE)
     )
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "cuda:1"
-    decoder_type: str = "ctc"
+    # Recognition head: "ctc" (production default), "rnnt" (experimental) or
+    # "auto" (explicitly resolves to the default head, currently CTC).
+    decoder_type: str = DEFAULT_DECODER_TYPE
     num_threads: int = 4
     confidence_threshold: float = 0.0  # deprecated; uncalibrated scores are not filtered
     allow_download: bool = False
@@ -191,10 +210,25 @@ class ASRConfig:
     second_pass_beam_size: int = 4
     hotword_specialty: Optional[str] = None  # e.g. "cardiology"; None = general set only
     hotword_max: int = 64
+    # Reviewed aliases/phonetic variants only participate in decoder bias when
+    # explicitly enabled; the default stays on reviewed spoken forms.
+    hotword_use_aliases: bool = False
+    hotword_use_phonetic_variants: bool = False
+    # Acoustic-safety gate (nats): bias applies only within this margin of the
+    # frame's best token, so it tips near-ties instead of forcing terms.
+    hotword_acoustic_gate: float = 5.0
+    # Benchmark mode is offline-only (tools/): it allows running both heads on
+    # the same audio. The realtime app never cross-runs CTC and RNNT.
+    benchmark_mode: bool = False
+    # Optional CUDA-graph streaming optimisation; eager is the reference path.
+    cuda_graph_streaming: bool = False
 
     def __post_init__(self) -> None:
-        if self.decoder_type != "ctc":
-            raise ValueError("Only greedy CTC decoding is supported")
+        self.decoder_type = (self.decoder_type or "").strip().lower()
+        if self.decoder_type not in DECODER_TYPES:
+            raise ValueError(
+                f"decoder_type must be one of {', '.join(DECODER_TYPES)}"
+            )
         if self.right_context not in (0, 1, 6, 13):
             raise ValueError("right_context must be 0, 1, 6 or 13")
         if not 0 < self.partial_interval_s <= 5 or not 0 < self.max_segment_s <= 120:
@@ -211,6 +245,13 @@ class ASRConfig:
             raise ValueError("hotword_max must be within [1, 512]")
         if self.hotword_specialty is not None and not self.hotword_specialty.strip():
             raise ValueError("hotword_specialty must be a non-empty name or null")
+        if not 0 < self.hotword_acoustic_gate <= 20:
+            raise ValueError("hotword_acoustic_gate must be within (0, 20] nats")
+
+    @property
+    def resolved_decoder(self) -> str:
+        """The head actually used: "auto" resolves to the production default."""
+        return DEFAULT_DECODER_TYPE if self.decoder_type == "auto" else self.decoder_type
 
     # Transcript stabilization: words kept un-committed until they stop moving.
     holdback_words: int = 2
@@ -325,6 +366,16 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
     if hotword_specialty is not None:
         config.asr.hotword_specialty = hotword_specialty.strip() or None
     config.asr.hotword_max = _env_int("SHENAVA_HOTWORD_MAX", config.asr.hotword_max)
+    config.asr.hotword_use_aliases = _env_bool(
+        "SHENAVA_HOTWORD_ALIASES", config.asr.hotword_use_aliases)
+    config.asr.hotword_use_phonetic_variants = _env_bool(
+        "SHENAVA_HOTWORD_PHONETIC", config.asr.hotword_use_phonetic_variants)
+    config.asr.second_pass_beam_size = _env_int(
+        "SHENAVA_BEAM_SIZE", config.asr.second_pass_beam_size)
+    config.asr.benchmark_mode = _env_bool("SHENAVA_BENCHMARK_MODE", config.asr.benchmark_mode)
+    config.asr.cuda_graph_streaming = _env_bool(
+        "SHENAVA_CUDA_GRAPH_STREAMING", config.asr.cuda_graph_streaming)
+    config.audio.vad_adaptive = _env_bool("SHENAVA_VAD_ADAPTIVE", config.audio.vad_adaptive)
     audio_device = _env("SHENAVA_AUDIO_DEVICE")
     if audio_device:
         config.audio.device = int(audio_device) if audio_device.isdigit() else audio_device

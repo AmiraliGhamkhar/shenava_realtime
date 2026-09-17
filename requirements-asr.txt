@@ -1,6 +1,11 @@
-# Real recognition stack. The native adapter targets NeMo 2.4.0; the matching
-# Torch/torchaudio 2.7.1 pair is pinned so the cache-aware stream API used by
-# native_stream.py is the version it was checked against.
+# Real recognition stack for Shenava Koochik v1.5 (hybrid CTC + RNNT).
+# The native adapters target NeMo 2.4.0; the matching Torch/torchaudio 2.7.1
+# pair is pinned so the cache-aware stream API used by native_stream.py and
+# rnnt_stream.py is the version they were checked against.  2.4.0 provides the
+# hybrid `change_decoding_strategy(decoder_type=...)` head selection both paths
+# rely on; the backend probes the loaded model and fails clearly if the
+# installed build does not expose what was requested.
+# No new runtime dependency was added for the RNNT path.
 # Availability of NeMo compiled dependencies on native Windows varies; use a
 # supported Linux/CUDA or CPU environment.
 nemo_toolkit[asr]==2.4.0

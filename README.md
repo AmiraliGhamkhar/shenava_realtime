@@ -4,8 +4,9 @@ A small local-first Python 3.10+ desktop transcription pipeline. No LLM,
 embeddings, vector database, edit-distance or semantic matching.
 
 ```text
-16 kHz mono audio → RMS VAD → Shenava cache-aware greedy CTC
-  → transcript stabilization → Persian normalization → protected spans
+16 kHz mono audio → adaptive RMS VAD → bounded queue
+  → Shenava v1.5 decoder (CTC production | RNNT experimental)
+  → stabilization → endpoint second pass → Persian normalization → protected spans
   → token Aho–Corasick → deterministic span resolver → typed grammars
   → canonical stable text → overlay / keyboard / clipboard
                                          └→ optional dictionary NER → rules
@@ -55,14 +56,18 @@ inject into your local desktop; this repository is not a browser application.
 
 ### Models
 
-Primary: **Shenava Koochik v1.0, 114M**, hybrid FastConformer with CTC decoding.
+Primary: **Shenava Koochik v1.5, 114M**, hybrid FastConformer with **both** a
+CTC and an RNNT head. Per the publisher's model card, v1.5 keeps the v1.0 CTC
+head unchanged (the encoder was frozen during the corrective finetune) and
+repairs the RNNT head that was broken in v1.0. **CTC remains the production
+default here**; RNNT is selectable for benchmarking and controlled experiments.
 The bundled [model card](shenava-koochik/README.md) documents contexts
 `[70,13]`, `[70,6]`, `[70,1]`, `[70,0]` and model provenance.
 
 Provision the trusted `.nemo` checkpoint from
-[Reza2kn/Shenava-Koochik-v1.0](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0)
+[Reza2kn/Shenava-Koochik-v1.5](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.5)
 onto local storage, then set `SHENAVA_MODEL_PATH` or use `--model`. The default is
-`shenava-koochik/shenava-koochik-v1.0.nemo`. **Weights are not included.**
+`shenava-koochik/shenava-koochik-v1.5.nemo`. **Weights are not included.**
 NeMo checkpoints are executable serialization artifacts: do not load untrusted
 files. Verify the publisher's checksum when provisioning.
 
@@ -78,17 +83,62 @@ is loaded, avoiding doubled RAM and surprising model changes.
 
 ## Run
 
+### 1. Default: CTC production path
+
 ```bash
-python main.py --model /models/shenava-koochik-v1.0.nemo --device cpu
+python main.py --model /models/shenava-koochik-v1.5.nemo --device cpu
 # Strict native-streaming mode (recommended for deployment validation):
-python main.py --model /models/shenava-koochik-v1.0.nemo --require-streaming \
+python main.py --model /models/shenava-koochik-v1.5.nemo --require-streaming \
   --right-context 13 --output-mode console --no-overlay --no-inject
 # Disable (or restrict) the utterance-end second-pass decoder:
-python main.py --model /models/shenava-koochik-v1.0.nemo --second-pass off
-python main.py --model /models/shenava-koochik-v1.0.nemo \
-  --second-pass context --hotword-specialty cardiology
+python main.py --model /models/shenava-koochik-v1.5.nemo --second-pass off
+python main.py --model /models/shenava-koochik-v1.5.nemo \
+  --second-pass context --hotword-specialty cardiology --beam-size 4
+# Let reviewed aliases/phonetic variants bias the CTC second pass (opt-in):
+python main.py --second-pass context --hotword-aliases --hotword-phonetic
 python main.py --list-devices
 ```
+
+`--decoder auto` is accepted and resolves explicitly to CTC.
+
+### 2. RNNT experimental mode
+
+```bash
+python main.py --model /models/shenava-koochik-v1.5.nemo --decoder rnnt \
+  --output-mode console --no-inject
+```
+
+RNNT requires a hybrid checkpoint. On a CTC-only checkpoint the run **fails at
+startup** with the heads the checkpoint actually exposes — it never falls back
+to CTC silently. The RNNT endpoint second pass re-decodes with RNNT only; CTC
+and RNNT are never cross-run outside the offline benchmark tool. Reviewed
+hotword biasing applies to the CTC beam and is not transferred to the
+transducer.
+
+### 3. Benchmark / evaluation
+
+```bash
+# Real audio (this is the one that measures recognition accuracy):
+python tools/evaluate_audio.py corpus.jsonl --system v1.5-ctc  --report ctc.json
+python tools/evaluate_audio.py corpus.jsonl --system v1.5-rnnt --report rnnt.json
+python tools/evaluate_audio.py corpus.jsonl --system v1.0-ctc \
+  --model /models/shenava-koochik-v1.0.nemo --report v10.json
+python tools/evaluate_audio.py --compare v10.json ctc.json rnnt.json
+
+# Deterministic text regression (NOT recognition accuracy):
+python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
+```
+
+`corpus.jsonl` rows are `{"audio": "clips/0001.wav", "reference": "..."}` with
+paths relative to the metadata file; WAVs must be 16 kHz mono (never resampled
+silently). The evaluator reports WER, CER, S/I/D counts, medical-term,
+drug-name, dose/number, BP and abbreviation error rates, forced-boundary error
+rate, latency and RTF, plus an error attribution split (acoustic /
+normalization / terminology / numbers / endpointing).
+
+**No accuracy claim is made in this repository.** The numbers on the model card
+are the publisher's, measured on their benchmark with their normalizer; run the
+evaluator on your own corpus before drawing conclusions.
 
 Output modes remain `both` (default), `overlay`, `inject`, `clipboard`, `console`.
 The overlay shows live partials. **Injection and clinical extraction wait until
@@ -208,9 +258,28 @@ win over `.env`. Useful environment variables:
 `SHENAVA_REQUIRE_STREAMING`, `SHENAVA_ALLOW_DOWNLOAD`, `SHENAVA_AUDIO_DEVICE`,
 `SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`, `SHENAVA_LOG_LEVEL`,
 `SHENAVA_SECOND_PASS` (`off|greedy|context`), `SHENAVA_HOTWORD_SPECIALTY`,
-`SHENAVA_HOTWORD_MAX`.
+`SHENAVA_HOTWORD_MAX`, `SHENAVA_HOTWORD_ALIASES`, `SHENAVA_HOTWORD_PHONETIC`,
+`SHENAVA_BEAM_SIZE`, `SHENAVA_VAD_ADAPTIVE`, `SHENAVA_BENCHMARK_MODE`,
+`SHENAVA_CUDA_GRAPH_STREAMING`.
 
-`SHENAVA_DECODER` accepts only `ctc`. Invalid numeric ranges are rejected.
+`SHENAVA_DECODER` accepts `ctc` (default), `rnnt` or `auto` (explicitly the
+default head, CTC). Invalid numeric ranges are rejected.
+
+### Adaptive VAD
+
+The RMS detector keeps its hysteresis, minimum speech/silence durations,
+bounded pre-roll and hard segment cap. On top of those it now estimates a
+local noise floor by *minimum statistics* over a bounded window of non-speech
+frames, and derives onset/offset from it. Adaptation is one-directional and
+clamped: while the measured floor sits below the configured `vad_offset_rms`
+(a quiet room, or an unmeasured one) the configured static thresholds are used
+verbatim, and thresholds can never exceed `vad_adaptive_max_gain` times them.
+A quiet speaker therefore behaves exactly as before; only genuine background
+noise raises the bar. Disable with `--no-adaptive-vad` / `SHENAVA_VAD_ADAPTIVE=0`.
+
+Documented limit: noise already louder than the configured onset reads as
+speech, because the floor is only measured in silence. That case still needs
+measured thresholds — the adaptive layer refines tuning, it does not replace it.
 JSON exposes the VAD, UI and optional output settings in `config.py`.
 `commit_on_endpoint=false` retains an experimental early-commit mode for API
 compatibility; it cannot retract a committed prefix and is not recommended for
@@ -316,7 +385,7 @@ suggested fragment is printed for review only and is **never** written into
 ## Optional clinical extraction / persistence
 
 ```bash
-python main.py --model /models/shenava-koochik-v1.0.nemo \
+python main.py --model /models/shenava-koochik-v1.5.nemo \
   --clinical-sqlite clinical.sqlite --clinical-jsonl clinical.jsonl
 ```
 
@@ -353,7 +422,7 @@ by Git. Third-party NeMo logs should also be audited before handling patient dat
 pytest -q
 python main.py --self-test
 python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
-python tools/verify_pipeline.py --model /models/shenava-koochik-v1.0.nemo \
+python tools/verify_pipeline.py --model /models/shenava-koochik-v1.5.nemo \
   --wav /data/consented-persian-sample.wav --device cpu --right-context 13
 ```
 

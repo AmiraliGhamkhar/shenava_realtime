@@ -3,9 +3,10 @@
 
 Pipeline::
 
-    microphone -> audio capture -> RMS VAD -> Shenava streaming CTC
-              -> transcript stabilization -> FST post-processing
-              -> stable deltas -> clipboard / keyboard output
+    microphone -> audio capture -> adaptive RMS VAD -> bounded queue
+              -> Shenava v1.5 streaming decoder (CTC by default, RNNT optional)
+              -> transcript stabilization -> endpoint second pass
+              -> FST post-processing -> stable deltas -> clipboard / keyboard
 
 Run ``python main.py --help`` for the command line switches; every option is
 also available as a ``SHENAVA_*`` environment variable or in ``config.json``.
@@ -119,6 +120,7 @@ class ShenavaApp:
             self.stop()
             raise
 
+        self._log_startup_diagnostics()
         logger.info("listening — speak now (Ctrl+Alt+R toggles, Ctrl+Alt+Q quits)")
         try:
             while not self._shutdown.is_set():
@@ -151,6 +153,26 @@ class ShenavaApp:
         logger.info("shutdown requested")
         self._shutdown.set()
 
+    def _log_startup_diagnostics(self) -> None:
+        """One-line summary of what is actually active (no transcript content)."""
+        asr = self.config.asr
+        logger.info(
+            "model=%s head=%s right_context=%s second_pass=%s beam=%d "
+            "hotwords(aliases=%s, phonetic=%s, max=%d) adaptive_vad=%s benchmark=%s",
+            asr.model_path or asr.model_name, asr.resolved_decoder, asr.right_context,
+            asr.second_pass, asr.second_pass_beam_size, asr.hotword_use_aliases,
+            asr.hotword_use_phonetic_variants, asr.hotword_max,
+            self.config.audio.vad_adaptive, asr.benchmark_mode,
+        )
+        capabilities = getattr(self.asr.backend, "capabilities", None)
+        if callable(capabilities):
+            try:
+                logger.info("checkpoint capabilities — %s", capabilities().describe())
+            except Exception as exc:  # capability reporting must not block startup
+                logger.warning("could not report checkpoint capabilities: %s", exc)
+        stats = self.asr.get_statistics()
+        logger.info("decoder=%s second_pass=%s", stats["decoder"], stats["second_pass"])
+
     # ------------------------------------------------------------------ #
     def _track_performance(self) -> None:
         stats = self.asr.get_statistics()
@@ -162,10 +184,23 @@ class ShenavaApp:
     def _print_statistics(self) -> None:
         stats = self.asr.get_statistics()
         logger.info(
-            "session: %d utterances, %d decodes, %.1fs audio",
+            "session: %d utterances, %d decodes, %.1fs audio (head=%s)",
             int(stats["utterances"]),
             int(stats["decodes"]),
             float(stats["total_audio_duration"]),
+            stats.get("decoder_head", "ctc"),
+        )
+        logger.info(
+            "robustness: %d queue overflows, %d dropped items (%.1fs audio), "
+            "%d discontinuities, %d forced splits, %d decoder errors, "
+            "second pass %s",
+            int(stats.get("queue_overflows", 0)),
+            int(stats.get("dropped_items", 0)),
+            float(stats.get("dropped_audio_seconds", 0.0)),
+            int(stats.get("discontinuities", 0)),
+            int(stats.get("forced_splits", 0)),
+            int(stats.get("decoder_errors", 0)),
+            stats.get("second_pass_stats", {}),
         )
         if self.injector is not None:
             injector_stats = self.injector.get_statistics()
@@ -259,7 +294,18 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
     parser.add_argument("--model", default=None, help="path to a local .nemo checkpoint")
     parser.add_argument("--device", default=None, help="torch device: auto, cpu, cuda, cuda:1")
-    parser.add_argument("--decoder", default=None, choices=["ctc"], help="greedy CTC decoder")
+    parser.add_argument("--decoder", default=None, choices=["ctc", "rnnt", "auto"],
+                        help="recognition head: ctc (production default), "
+                             "rnnt (experimental, hybrid checkpoints only), "
+                             "auto (explicitly use the default head = ctc)")
+    parser.add_argument("--beam-size", type=int, default=None,
+                        help="CTC second-pass beam width [1, 32] (default 4)")
+    parser.add_argument("--hotword-aliases", action="store_true",
+                        help="let reviewed terminology aliases bias the CTC second pass")
+    parser.add_argument("--hotword-phonetic", action="store_true",
+                        help="let reviewed phonetic variants bias the CTC second pass")
+    parser.add_argument("--no-adaptive-vad", action="store_true",
+                        help="use the fixed RMS thresholds instead of the adaptive noise floor")
     parser.add_argument("--threads", type=int, default=None, help="torch CPU thread count")
     parser.add_argument("--output-mode", choices=[mode.value for mode in OutputMode], default=None)
     parser.add_argument("--audio-device", default=None, help="input device index or name")
@@ -301,6 +347,14 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         config.asr.second_pass = args.second_pass
     if args.hotword_specialty:
         config.asr.hotword_specialty = args.hotword_specialty
+    if args.beam_size is not None:
+        config.asr.second_pass_beam_size = args.beam_size
+    if args.hotword_aliases:
+        config.asr.hotword_use_aliases = True
+    if args.hotword_phonetic:
+        config.asr.hotword_use_phonetic_variants = True
+    if args.no_adaptive_vad:
+        config.audio.vad_adaptive = False
     if args.allow_download:
         config.asr.allow_download = True
     if args.require_streaming:
