@@ -387,3 +387,41 @@ perform.
 
 **Default head: CTC.** RNNT must be requested explicitly and fails loudly when
 the checkpoint cannot provide it.
+
+## Sixth pass: migration to sherpa-onnx (Shenava-Koochik-v1.0, CTC-only)
+
+The NeMo/PyTorch backend described in the fifth pass above was removed and
+replaced with a sherpa-onnx (CPU, INT8, greedy CTC) backend, targeting the HF
+export `mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26`
+(pinned revision `4be3d2375c98a985154122d69b43360eb8bdca5a`; see
+`models/shenava/README.md`). This is a refactor-in-place, not a rewrite: the
+VAD, audio capture, stabilizer, post-processing, terminology/Aho-Corasick
+matcher, hotword list construction and clinical extraction are all unchanged.
+
+**Removed** (see the migration report for the full file/line audit): the
+`decoder_type`/RNNT selection surface (`DECODER_TYPES`, `resolved_decoder`,
+`--decoder`, `--right-context`, `SHENAVA_RIGHT_CONTEXT`), the encoder-cache
+native streaming adapters (`native_stream.py`, `rnnt_stream.py`) and their
+NeMo-internals-specific tests (`test_native_stream.py`, `test_rnnt_path.py`,
+`test_frontend.py`, `test_frontend_v15.py`), the CTC-beam + hotword-bias
+"context" second pass (`CTCBeamDecoder`, `BeamSecondPass`,
+`hotword_token_bias`, `test_ctc_beam.py`) — sherpa-onnx's public Python API
+exposes only decoded text, not the raw per-frame emissions or tokenizer object
+that mode needed — and all network-provisioning knobs (`SHENAVA_MODEL_NAME`,
+`SHENAVA_ALLOW_DOWNLOAD`, `--allow-download`).
+
+**Kept as explicit migration errors, not silent removals**: every removed
+environment variable raises `ValueError` naming its replacement
+(`config.py::_REMOVED_ENV_VARS`); a `.nemo` path in `SHENAVA_MODEL_PATH` names
+the new `SHENAVA_MODEL_PATH`(`.onnx`)/`SHENAVA_TOKENS_PATH` pair instead of
+silently failing to find a checkpoint.
+
+**Not independently re-verified in this pass** (network egress to
+huggingface.co's LFS/CDN endpoints was blocked in the migration sandbox after
+an exhaustive search for alternate paths — see the migration report): the real
+model's WER/CER, any parity claim against the retired NeMo v1.5 CTC path,
+real-hardware RTF at 1/2/4 threads, and real-microphone endpoint/partial
+behavior. The full pytest suite (`pytest -q`) passes without the model using a
+mock `sherpa_onnx` module (`tests/fake_sherpa_onnx.py`); an optional smoke
+test (`tests/test_asr_backend_smoke.py`) is skipped unless the real model
+files are present locally.

@@ -13,6 +13,13 @@ transcripts/
 
 # Model artifacts (large; kept outside the repo)
 *.nemo
+*.onnx
+models/shenava/*
+!models/shenava/README.md
+!models/shenava/tokens.txt.reference
+
+# Local environment (never commit secrets/paths)
+.env
 
 # OS / editor
 .DS_Store

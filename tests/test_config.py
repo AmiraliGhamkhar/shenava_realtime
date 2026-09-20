@@ -20,20 +20,25 @@ from shenava_realtime.config import (
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for name in (
+        "SHENAVA_ASR_BACKEND",
+        "ASR_BACKEND",
         "SHENAVA_MODEL_PATH",
-        "SHENAVA_MODEL_NAME",
+        "SHENAVA_TOKENS_PATH",
         "SHENAVA_DEVICE",
-        "SHENAVA_DECODER",
         "SHENAVA_NUM_THREADS",
+        "SHENAVA_SAMPLE_RATE",
+        "SHENAVA_FEATURE_DIM",
+        "SHENAVA_DECODING_METHOD",
         "SHENAVA_OUTPUT_MODE",
         "SHENAVA_INJECTOR_MODE",
         "SHENAVA_AUDIO_DEVICE",
         "SHENAVA_LOG_LEVEL",
         "SHENAVA_PARTIAL_INTERVAL_S",
+        "SHENAVA_REQUIRE_STREAMING",
         "SHENAVA_DEBUG",
         "SHENAVA_SECOND_PASS",
-        "SHENAVA_HOTWORD_SPECIALTY",
-        "SHENAVA_HOTWORD_MAX",
+        "SHENAVA_BENCHMARK_MODE",
+        "SHENAVA_VAD_ADAPTIVE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -43,24 +48,23 @@ def test_defaults_are_16k_mono_ctc():
     assert config.audio.sample_rate == 16000
     assert config.audio.channels == 1
     assert config.audio.chunk_size == 1024
-    assert config.asr.decoder_type == "ctc"
-    assert config.asr.device == "auto"
+    assert config.asr.asr_backend == "sherpa_onnx_ctc"
+    assert config.asr.device == "cpu"
     assert config.audio.vad_onset_rms > config.audio.vad_offset_rms
 
 
-def test_env_overrides(monkeypatch):
-    monkeypatch.setenv("SHENAVA_MODEL_PATH", "/tmp/model.nemo")
+def test_env_overrides(monkeypatch, tmp_path):
+    model = tmp_path / "model.int8.onnx"
+    monkeypatch.setenv("SHENAVA_MODEL_PATH", str(model))
     monkeypatch.setenv("SHENAVA_DEVICE", "cpu")
-    monkeypatch.setenv("SHENAVA_DECODER", "ctc")
     monkeypatch.setenv("SHENAVA_NUM_THREADS", "8")
     monkeypatch.setenv("SHENAVA_OUTPUT_MODE", "inject")
     monkeypatch.setenv("SHENAVA_INJECTOR_MODE", "keyboard")
     monkeypatch.setenv("SHENAVA_LOG_LEVEL", "DEBUG")
 
     config = apply_env_overrides(AppConfig())
-    assert config.asr.model_path == "/tmp/model.nemo"
+    assert config.asr.model_path == str(model)
     assert config.asr.device == "cpu"
-    assert config.asr.decoder_type == "ctc"
     assert config.asr.num_threads == 8
     assert config.output_mode is OutputMode.INJECT_ONLY
     assert config.injector.mode is InjectorMode.KEYBOARD
@@ -77,13 +81,13 @@ def test_invalid_env_values_are_ignored(monkeypatch):
 
 def test_dotenv_is_loaded_without_overriding_exports(monkeypatch, tmp_path):
     env_file = tmp_path / ".env"
-    env_file.write_text("SHENAVA_DEVICE=cpu\n# comment\nSHENAVA_DECODER='ctc'\n", encoding="utf-8")
-    monkeypatch.setenv("SHENAVA_NUM_THREADS", "2")
+    env_file.write_text("SHENAVA_DEVICE=cpu\n# comment\nSHENAVA_NUM_THREADS='2'\n", encoding="utf-8")
+    monkeypatch.setenv("SHENAVA_NUM_THREADS", "4")
     load_dotenv(env_file)
     import os
 
     assert os.environ["SHENAVA_DEVICE"] == "cpu"
-    assert os.environ["SHENAVA_DECODER"] == "ctc"
+    assert os.environ["SHENAVA_NUM_THREADS"] == "4"  # exported value wins
 
 
 def test_json_round_trip(tmp_path):
@@ -111,7 +115,7 @@ def test_saved_json_is_readable(tmp_path):
     ConfigManager.save(AppConfig(), path)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["output_mode"] == "both"
-    assert data["asr"]["decoder_type"] == "ctc"
+    assert data["asr"]["asr_backend"] == "sherpa_onnx_ctc"
     assert data["audio"]["sample_rate"] == 16000
 
 
@@ -131,7 +135,7 @@ def test_malformed_section_raises(tmp_path):
 
 def test_missing_file_falls_back_to_defaults(tmp_path):
     config = ConfigManager.load(tmp_path / "nope.json")
-    assert config.asr.decoder_type == "ctc"
+    assert config.asr.asr_backend == "sherpa_onnx_ctc"
 
 
 def test_chunk_duration_helper():
@@ -152,21 +156,10 @@ def test_second_pass_defaults_and_env_overrides(monkeypatch):
     config = AppConfig()
     assert config.asr.second_pass == "greedy"
     assert config.asr.second_pass_min_utterance_s == 0.5
-    assert config.asr.second_pass_beam_size == 4
-    assert config.asr.hotword_specialty is None
-    assert config.asr.hotword_max == 64
 
-    monkeypatch.setenv("SHENAVA_SECOND_PASS", "CONTEXT")
-    monkeypatch.setenv("SHENAVA_HOTWORD_SPECIALTY", " cardiology ")
-    monkeypatch.setenv("SHENAVA_HOTWORD_MAX", "8")
+    monkeypatch.setenv("SHENAVA_SECOND_PASS", "OFF")
     config = apply_env_overrides(AppConfig())
-    assert config.asr.second_pass == "context"
-    assert config.asr.hotword_specialty == "cardiology"
-    assert config.asr.hotword_max == 8
-
-    monkeypatch.setenv("SHENAVA_HOTWORD_SPECIALTY", "   ")
-    config = apply_env_overrides(AppConfig())
-    assert config.asr.hotword_specialty is None
+    assert config.asr.second_pass == "off"
 
 
 def test_second_pass_invalid_values_rejected(monkeypatch):
@@ -177,5 +170,5 @@ def test_second_pass_invalid_values_rejected(monkeypatch):
         apply_env_overrides(AppConfig())
     with pytest.raises(ValueError):
         ASRConfig(second_pass="")
-    with pytest.raises(ValueError):
-        ASRConfig(right_context=7)
+    with pytest.raises(ValueError, match="context"):
+        ASRConfig(second_pass="context")

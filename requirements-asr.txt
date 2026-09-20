@@ -1,13 +1,12 @@
-# Real recognition stack for Shenava Koochik v1.5 (hybrid CTC + RNNT).
-# The native adapters target NeMo 2.4.0; the matching Torch/torchaudio 2.7.1
-# pair is pinned so the cache-aware stream API used by native_stream.py and
-# rnnt_stream.py is the version they were checked against.  2.4.0 provides the
-# hybrid `change_decoding_strategy(decoder_type=...)` head selection both paths
-# rely on; the backend probes the loaded model and fails clearly if the
-# installed build does not expose what was requested.
-# No new runtime dependency was added for the RNNT path.
-# Availability of NeMo compiled dependencies on native Windows varies; use a
-# supported Linux/CUDA or CPU environment.
-nemo_toolkit[asr]==2.4.0
-torch==2.7.1
-torchaudio==2.7.1
+# Real recognition stack for Shenava-Koochik-v1.0 (streaming CTC, sherpa-onnx).
+#
+# The runtime backend (shenava_realtime/asr_backend.py) loads an ONNX
+# export of the model via sherpa-onnx's Python API and runs it on ONNX
+# Runtime's CPU execution provider. There is no torch/nemo_toolkit dependency
+# anywhere in the runtime path; sherpa-onnx pulls in its own bundled ONNX
+# Runtime, so nothing else is required.
+#
+# Pinned to the version this migration was verified against (see
+# docs/REVIEW.md / the Phase 0 migration report for the exact spike results).
+sherpa-onnx==1.13.8
+numpy>=1.24,<3

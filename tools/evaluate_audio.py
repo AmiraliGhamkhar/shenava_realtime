@@ -31,14 +31,16 @@ Every run separates the error sources instead of reporting one number:
 ``numbers``        number/measurement errors surviving normalisation
 ``endpointing``    forced-boundary rows whose output does not match
 
-Comparison runs (``--system``): ``v1.0-ctc``, ``v1.5-ctc``, ``v1.5-rnnt``.  The
-system label only records what was configured; it never changes the maths.
+``--system`` records only a label for the report; it never changes the maths.
+The only supported system is the sherpa-onnx streaming CTC backend
+(``sherpa-onnx-ctc``); the historical NeMo CTC/RNNT labels (``v1.0-ctc``,
+``v1.5-ctc``, ``v1.5-rnnt``) are gone along with the NeMo backend.
 
 Usage::
 
-    python tools/evaluate_audio.py corpus.jsonl --system v1.5-ctc --report out.json
-    python tools/evaluate_audio.py corpus.jsonl --system v1.5-rnnt \\
-        --model /models/shenava-koochik-v1.5.nemo
+    python tools/evaluate_audio.py corpus.jsonl --report out.json
+    python tools/evaluate_audio.py corpus.jsonl \\
+        --model models/shenava/model.int8.onnx --tokens models/shenava/tokens.txt
     python tools/evaluate_audio.py --compare a.json b.json
 
 The evaluator is deliberately separate from runtime code: it imports the
@@ -64,7 +66,7 @@ import numpy as np  # noqa: E402
 from shenava_realtime.postprocessor import PostProcessor  # noqa: E402
 from shenava_realtime.terminology import default_rules  # noqa: E402
 
-SYSTEMS = ("v1.0-ctc", "v1.5-ctc", "v1.5-rnnt")
+SYSTEMS = ("sherpa-onnx-ctc",)
 _NUMBER_RE = re.compile(r"[-+]?\d+(?:[./]\d+)?")
 _BP_RE = re.compile(r"\d{2,3}\s*/\s*\d{2,3}")
 _LATIN_ABBREV_RE = re.compile(r"\b[A-Z][A-Za-z0-9]{1,7}\b")
@@ -267,21 +269,20 @@ class Report:
 
 
 def build_backend(args: argparse.Namespace):
-    """Load the configured checkpoint with the requested head (lazy import)."""
-    from shenava_realtime.asr_backend import NeMoASR
+    """Load the configured sherpa-onnx model (lazy import)."""
+    from shenava_realtime.asr_backend import SherpaOnnxASR
     from shenava_realtime.config import AppConfig
 
     config = AppConfig.from_env()
     if args.model:
         config.asr.model_path = args.model
-    if args.model_name:
-        config.asr.model_name = args.model_name
+    if args.tokens:
+        config.asr.tokens_path = args.tokens
     if args.device:
         config.asr.device = args.device
-    config.asr.decoder_type = "rnnt" if args.system == "v1.5-rnnt" else "ctc"
     config.asr.benchmark_mode = True
     config.asr.__post_init__()
-    backend = NeMoASR(config.asr)
+    backend = SherpaOnnxASR(config.asr)
     backend.load()
     return backend, config
 
@@ -296,8 +297,8 @@ def evaluate(args: argparse.Namespace) -> Report:
 
     report = Report(
         system=args.system,
-        model=str(config.asr.model_path or config.asr.model_name),
-        decoder=config.asr.resolved_decoder,
+        model=str(config.asr.model_path),
+        decoder="ctc",
     )
     wer = EditCounts()
     cer = EditCounts()
@@ -413,11 +414,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("corpus", type=Path, nargs="?",
                         help="JSONL/CSV metadata with audio + reference columns")
-    parser.add_argument("--system", choices=SYSTEMS, default="v1.5-ctc",
-                        help="label + head for this run (default v1.5-ctc)")
-    parser.add_argument("--model", default=None, help="path to a local .nemo checkpoint")
-    parser.add_argument("--model-name", default=None, help="hub model name (needs download opt-in)")
-    parser.add_argument("--device", default=None, help="auto | cpu | cuda")
+    parser.add_argument("--system", choices=SYSTEMS, default="sherpa-onnx-ctc",
+                        help="label for this run (default sherpa-onnx-ctc; the only supported system)")
+    parser.add_argument("--model", default=None, help="path to the sherpa-onnx model.int8.onnx")
+    parser.add_argument("--tokens", default=None, help="path to the sherpa-onnx tokens.txt")
+    parser.add_argument("--device", default=None, help="cpu (only supported value)")
     parser.add_argument("--report", type=Path, default=None, help="write the JSON report here")
     parser.add_argument("--compare", type=Path, nargs="+", default=None,
                         help="print a comparison table of previously written reports")

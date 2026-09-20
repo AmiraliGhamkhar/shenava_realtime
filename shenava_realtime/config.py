@@ -4,8 +4,11 @@ All runtime knobs live here as small dataclasses.  A handful of them can be
 overridden with environment variables (optionally read from a local ``.env``
 file) so the app can be retargeted without editing code:
 
-``SHENAVA_MODEL_PATH``, ``SHENAVA_MODEL_NAME``, ``SHENAVA_DEVICE``,
-``SHENAVA_DECODER``, ``SHENAVA_NUM_THREADS``, ``SHENAVA_OUTPUT_MODE``,
+``SHENAVA_ASR_BACKEND`` (unprefixed ``ASR_BACKEND`` also accepted),
+``SHENAVA_MODEL_PATH``, ``SHENAVA_TOKENS_PATH``, ``SHENAVA_DEVICE``,
+``SHENAVA_NUM_THREADS``, ``SHENAVA_SAMPLE_RATE``, ``SHENAVA_FEATURE_DIM``,
+``SHENAVA_DECODING_METHOD``, ``SHENAVA_SECOND_PASS``,
+``SHENAVA_REQUIRE_STREAMING``, ``SHENAVA_OUTPUT_MODE``,
 ``SHENAVA_INJECTOR_MODE``, ``SHENAVA_AUDIO_DEVICE``, ``SHENAVA_LOG_LEVEL``.
 """
 
@@ -22,12 +25,14 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_FILE = REPO_ROOT / "shenava-koochik" / "shenava-koochik-v1.5.nemo"
-DEFAULT_MODEL_NAME = "Reza2kn/Shenava-Koochik-v1.5"
-# Recognition heads the backend can select. "auto" resolves to the production
-# default (CTC) and is kept explicit so a config file can say so on purpose.
-DECODER_TYPES = ("ctc", "rnnt", "auto")
-DEFAULT_DECODER_TYPE = "ctc"
+# Canonical on-disk location for the provisioned sherpa-onnx model (see
+# models/shenava/README.md for the download command and pinned revision).
+DEFAULT_MODEL_DIR = REPO_ROOT / "models" / "shenava"
+DEFAULT_MODEL_FILE = DEFAULT_MODEL_DIR / "model.int8.onnx"
+DEFAULT_TOKENS_FILE = DEFAULT_MODEL_DIR / "tokens.txt"
+# CTC greedy search is the only decoding method the runtime path supports.
+DECODING_METHODS = ("greedy_search",)
+DEFAULT_DECODING_METHOD = "greedy_search"
 
 
 class OutputMode(str, Enum):
@@ -176,82 +181,86 @@ class AudioConfig:
 
 @dataclass
 class ASRConfig:
-    """Shenava CTC, native encoder lookahead and bounded endpoint fallback."""
+    """Sherpa-ONNX streaming CTC (Shenava-Koochik-v1.0), CPU/INT8 only."""
 
-    model_name: str = DEFAULT_MODEL_NAME
+    # Which backend implementation to construct. Sherpa-ONNX CTC is the only
+    # supported value; kept explicit (rather than hard-coded) so tests and
+    # tooling can name it and so an unsupported value fails clearly.
+    asr_backend: str = "sherpa_onnx_ctc"
     model_path: Optional[str] = field(
         default_factory=lambda: _env("SHENAVA_MODEL_PATH") or str(DEFAULT_MODEL_FILE)
     )
-    device: str = "auto"  # "auto" | "cpu" | "cuda" | "cuda:1"
-    # Recognition head: "ctc" (production default), "rnnt" (experimental) or
-    # "auto" (explicitly resolves to the default head, currently CTC).
-    decoder_type: str = DEFAULT_DECODER_TYPE
+    tokens_path: Optional[str] = field(
+        default_factory=lambda: _env("SHENAVA_TOKENS_PATH") or str(DEFAULT_TOKENS_FILE)
+    )
+    device: str = "cpu"  # sherpa-onnx CPU provider only; no GPU in this backend
     num_threads: int = 4
+    sample_rate: int = 16000
+    feature_dim: int = 80
+    decoding_method: str = DEFAULT_DECODING_METHOD
     confidence_threshold: float = 0.0  # deprecated; uncalibrated scores are not filtered
-    allow_download: bool = False
+    # Recommended production value is 1 (see .env.example / README): the real
+    # sherpa-onnx model is always streaming, so this should normally be left
+    # on. It defaults to False here only so test doubles that model a
+    # non-streaming backend (tests/fakes.py) keep exercising the explicit
+    # EndpointDecoder fallback path in streaming.py without every call site
+    # having to opt out. The GATE itself (never falling back to an Offline
+    # recognizer) is enforced unconditionally in asr_backend.py regardless of
+    # this flag.
     require_streaming: bool = False
-    right_context: int = 13
     max_segment_s: float = 22.0
     commit_on_endpoint: bool = True
 
-    # How often to hand new audio to the native stream (encoder chunk sizes
-    # come from checkpoint metadata). Legacy window knobs are ignored.
+    # How often to hand new audio to the streaming recognizer.
     partial_interval_s: float = 0.5
-    left_context_s: float = 2.0
-    max_window_s: float = 10.0
     use_cache_aware_streaming: bool = True
 
     # Utterance-end second pass (natural endpoints only, endpoint-commit mode):
-    # "off" = streaming greedy only; "greedy" = one offline greedy re-decode;
-    # "context" = CTC beam + terminology hotword biasing (falls back to the
-    # offline greedy result when biasing is unusable, always logged).
+    # "off" = streaming greedy only; "greedy" = one offline greedy re-decode
+    # via the same recognizer. "context" (CTC beam + hotword biasing) is not
+    # supported by the sherpa-onnx backend: it needs raw per-frame emissions
+    # and the model's own tokenizer object, neither exposed by sherpa-onnx's
+    # public Python API, and is rejected at startup with a clear message.
     second_pass: str = "greedy"
     second_pass_min_utterance_s: float = 0.5
-    second_pass_beam_size: int = 4
-    hotword_specialty: Optional[str] = None  # e.g. "cardiology"; None = general set only
-    hotword_max: int = 64
-    # Reviewed aliases/phonetic variants only participate in decoder bias when
-    # explicitly enabled; the default stays on reviewed spoken forms.
-    hotword_use_aliases: bool = False
-    hotword_use_phonetic_variants: bool = False
-    # Acoustic-safety gate (nats): bias applies only within this margin of the
-    # frame's best token, so it tips near-ties instead of forcing terms.
-    hotword_acoustic_gate: float = 5.0
-    # Benchmark mode is offline-only (tools/): it allows running both heads on
-    # the same audio. The realtime app never cross-runs CTC and RNNT.
+    # Benchmark mode is offline-only (tools/): synthetic RTF/throughput runs.
     benchmark_mode: bool = False
-    # Optional CUDA-graph streaming optimisation; eager is the reference path.
-    cuda_graph_streaming: bool = False
 
     def __post_init__(self) -> None:
-        self.decoder_type = (self.decoder_type or "").strip().lower()
-        if self.decoder_type not in DECODER_TYPES:
+        if self.asr_backend != "sherpa_onnx_ctc":
             raise ValueError(
-                f"decoder_type must be one of {', '.join(DECODER_TYPES)}"
+                f"asr_backend must be 'sherpa_onnx_ctc', got {self.asr_backend!r}"
             )
-        if self.right_context not in (0, 1, 6, 13):
-            raise ValueError("right_context must be 0, 1, 6 or 13")
+        if (self.device or "").strip().lower() != "cpu":
+            raise ValueError(
+                "The sherpa-onnx backend is CPU-only; device must be 'cpu' "
+                f"(got {self.device!r}). GPU/CUDA is not supported by this "
+                "migration."
+            )
+        if self.sample_rate != 16000:
+            raise ValueError("Shenava requires a 16 kHz mono frontend")
+        if not 1 <= int(self.feature_dim) <= 512:
+            raise ValueError("feature_dim must be within [1, 512]")
+        if self.decoding_method not in DECODING_METHODS:
+            raise ValueError(
+                f"decoding_method must be one of {', '.join(DECODING_METHODS)}"
+            )
         if not 0 < self.partial_interval_s <= 5 or not 0 < self.max_segment_s <= 120:
             raise ValueError("Invalid ASR interval or segment limit")
         if self.num_threads < 1 or self.holdback_words < 0:
             raise ValueError("Invalid thread count or holdback")
         if self.second_pass not in ("off", "greedy", "context"):
             raise ValueError('second_pass must be "off", "greedy" or "context"')
+        if self.second_pass == "context":
+            raise ValueError(
+                'second_pass="context" (CTC beam + hotword biasing over raw '
+                "emissions) is not supported by the sherpa-onnx backend: "
+                "sherpa-onnx's public Python API exposes only decoded text, "
+                "not per-frame emissions or the model's tokenizer object. "
+                'Use second_pass="greedy" or "off".'
+            )
         if not 0 < self.second_pass_min_utterance_s <= 5:
             raise ValueError("second_pass_min_utterance_s must be within (0, 5] seconds")
-        if not 1 <= self.second_pass_beam_size <= 32:
-            raise ValueError("second_pass_beam_size must be within [1, 32]")
-        if not 1 <= self.hotword_max <= 512:
-            raise ValueError("hotword_max must be within [1, 512]")
-        if self.hotword_specialty is not None and not self.hotword_specialty.strip():
-            raise ValueError("hotword_specialty must be a non-empty name or null")
-        if not 0 < self.hotword_acoustic_gate <= 20:
-            raise ValueError("hotword_acoustic_gate must be within (0, 20] nats")
-
-    @property
-    def resolved_decoder(self) -> str:
-        """The head actually used: "auto" resolves to the production default."""
-        return DEFAULT_DECODER_TYPE if self.decoder_type == "auto" else self.decoder_type
 
     # Transcript stabilization: words kept un-committed until they stop moving.
     holdback_words: int = 2
@@ -338,43 +347,67 @@ class AppConfig:
         return config
 
 
+# Legacy NeMo-era environment variables that no longer apply. Set is a clear
+# migration error rather than a silently ignored knob.
+_REMOVED_ENV_VARS = {
+    "SHENAVA_RIGHT_CONTEXT": "streaming right-context is fixed by the ONNX export",
+    "SHENAVA_MODEL_NAME": "network model provisioning was removed; set SHENAVA_MODEL_PATH "
+                          "and SHENAVA_TOKENS_PATH to a locally provisioned sherpa-onnx model "
+                          "(see models/shenava/README.md)",
+    "SHENAVA_ALLOW_DOWNLOAD": "automatic downloads were removed; provision the model with the "
+                              "documented `hf download` command in models/shenava/README.md",
+    "SHENAVA_DECODER": "the RNNT head was removed; the sherpa-onnx backend is CTC-only",
+    "SHENAVA_BEAM_SIZE": "the CTC beam + hotword-bias second pass was removed "
+                         "(sherpa-onnx exposes no raw emissions); use SHENAVA_SECOND_PASS=greedy",
+    "SHENAVA_HOTWORD_ALIASES": "decoder-time hotword biasing was removed with the beam second pass",
+    "SHENAVA_HOTWORD_PHONETIC": "decoder-time hotword biasing was removed with the beam second pass",
+    "SHENAVA_CUDA_GRAPH_STREAMING": "CUDA is not supported by the sherpa-onnx CPU backend",
+}
+
+
+def _check_removed_env_vars() -> None:
+    for name, message in _REMOVED_ENV_VARS.items():
+        if _env(name) is not None:
+            raise ValueError(f"{name} is no longer supported: {message}")
+
+
 def apply_env_overrides(config: AppConfig) -> AppConfig:
     """Apply the documented ``SHENAVA_*`` environment overrides in place."""
+    _check_removed_env_vars()
+
+    asr_backend = _env("SHENAVA_ASR_BACKEND") or _env("ASR_BACKEND")
+    if asr_backend:
+        config.asr.asr_backend = asr_backend
     model_path = _env("SHENAVA_MODEL_PATH")
     if model_path:
+        if model_path.endswith(".nemo"):
+            raise ValueError(
+                f"SHENAVA_MODEL_PATH={model_path!r} points at a legacy .nemo "
+                "checkpoint. The runtime now loads a sherpa-onnx model: set "
+                "SHENAVA_MODEL_PATH to model.int8.onnx and SHENAVA_TOKENS_PATH "
+                "to tokens.txt (see models/shenava/README.md)."
+            )
         config.asr.model_path = model_path
-    model_name = _env("SHENAVA_MODEL_NAME")
-    if model_name:
-        config.asr.model_name = model_name
+    tokens_path = _env("SHENAVA_TOKENS_PATH")
+    if tokens_path:
+        config.asr.tokens_path = tokens_path
     device = _env("SHENAVA_DEVICE")
     if device:
         config.asr.device = device
-    decoder = _env("SHENAVA_DECODER")
-    if decoder:
-        config.asr.decoder_type = decoder
     config.asr.num_threads = _env_int("SHENAVA_NUM_THREADS", config.asr.num_threads)
+    config.asr.sample_rate = _env_int("SHENAVA_SAMPLE_RATE", config.asr.sample_rate)
+    config.asr.feature_dim = _env_int("SHENAVA_FEATURE_DIM", config.asr.feature_dim)
+    decoding_method = _env("SHENAVA_DECODING_METHOD")
+    if decoding_method:
+        config.asr.decoding_method = decoding_method
     config.asr.partial_interval_s = _env_float(
         "SHENAVA_PARTIAL_INTERVAL_S", config.asr.partial_interval_s
     )
-    config.asr.allow_download = _env_bool("SHENAVA_ALLOW_DOWNLOAD", config.asr.allow_download)
     config.asr.require_streaming = _env_bool("SHENAVA_REQUIRE_STREAMING", config.asr.require_streaming)
-    config.asr.right_context = _env_int("SHENAVA_RIGHT_CONTEXT", config.asr.right_context)
     second_pass = _env("SHENAVA_SECOND_PASS")
     if second_pass:
         config.asr.second_pass = second_pass.strip().lower()
-    hotword_specialty = _env("SHENAVA_HOTWORD_SPECIALTY")
-    if hotword_specialty is not None:
-        config.asr.hotword_specialty = hotword_specialty.strip() or None
-    config.asr.hotword_max = _env_int("SHENAVA_HOTWORD_MAX", config.asr.hotword_max)
-    config.asr.hotword_use_aliases = _env_bool(
-        "SHENAVA_HOTWORD_ALIASES", config.asr.hotword_use_aliases)
-    config.asr.hotword_use_phonetic_variants = _env_bool(
-        "SHENAVA_HOTWORD_PHONETIC", config.asr.hotword_use_phonetic_variants)
-    config.asr.second_pass_beam_size = _env_int(
-        "SHENAVA_BEAM_SIZE", config.asr.second_pass_beam_size)
     config.asr.benchmark_mode = _env_bool("SHENAVA_BENCHMARK_MODE", config.asr.benchmark_mode)
-    config.asr.cuda_graph_streaming = _env_bool(
-        "SHENAVA_CUDA_GRAPH_STREAMING", config.asr.cuda_graph_streaming)
     config.audio.vad_adaptive = _env_bool("SHENAVA_VAD_ADAPTIVE", config.audio.vad_adaptive)
     audio_device = _env("SHENAVA_AUDIO_DEVICE")
     if audio_device:

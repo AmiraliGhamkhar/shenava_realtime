@@ -1,9 +1,9 @@
-"""Benchmark the Shenava decoder on synthetic audio (development tool).
+"""Benchmark the Shenava sherpa-onnx decoder (development tool).
 
-Replaces the old one-off ``profile_*.py`` scripts: it reads the model path from
-the usual configuration (``SHENAVA_MODEL_PATH`` / ``--model``) instead of a
-hard-coded absolute path, and it measures both the offline decode latency and
-the native-streaming cost.
+Reads the model path from the usual configuration (``SHENAVA_MODEL_PATH`` /
+``SHENAVA_TOKENS_PATH`` / ``--model`` / ``--tokens``) instead of a hard-coded
+absolute path, and measures both the offline decode latency and the native
+streaming cost.
 
     python tools/profile_asr.py --seconds 1 2 5 10 --threads 4
 """
@@ -36,9 +36,8 @@ def synthetic_speech(seconds: float, sample_rate: int = 16000, seed: int = 42) -
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=None, help="path to a .nemo checkpoint")
-    parser.add_argument("--device", default=None, help="auto | cpu | cuda")
-    parser.add_argument("--decoder", default=None, help="ctc (default) or rnnt")
+    parser.add_argument("--model", default=None, help="path to model.int8.onnx")
+    parser.add_argument("--tokens", default=None, help="path to tokens.txt")
     parser.add_argument("--threads", type=int, default=None)
     parser.add_argument("--seconds", type=float, nargs="+", default=[1.0, 2.0, 5.0, 10.0])
     parser.add_argument("--repeats", type=int, default=3)
@@ -49,18 +48,17 @@ def main() -> int:
     config = AppConfig.from_env()
     if args.model:
         config.asr.model_path = args.model
-    if args.device:
-        config.asr.device = args.device
-    if args.decoder:
-        config.asr.decoder_type = args.decoder
+    if args.tokens:
+        config.asr.tokens_path = args.tokens
     if args.threads:
         config.asr.num_threads = args.threads
 
-    from shenava_realtime.asr_backend import NeMoASR
+    from shenava_realtime.asr_backend import SherpaOnnxASR
 
-    backend = NeMoASR(config.asr)
+    backend = SherpaOnnxASR(config.asr)
     backend.load()
-    print(f"device: {backend.device} | load: {backend.load_seconds:.1f}s")
+    print(f"device: {backend.device} | load: {backend.load_seconds:.2f}s | "
+          f"{backend.capabilities().describe()}")
 
     print(f"\n{'audio':>7} | {'best':>7} | {'RTF':>6} | text")
     for seconds in args.seconds:
@@ -92,6 +90,8 @@ def main() -> int:
             f"\nstreaming ({decoder.name}): {decodes} decodes in {elapsed:.2f}s "
             f"for 10.0s of audio (RTF {elapsed / 10.0:.2f}x)"
         )
+
+    print("\nStats (backend.stats(), never transcript/audio content):", backend.stats())
     return 0
 
 

@@ -33,8 +33,6 @@ def harness():
     config.audio.queue_max_chunks = 128  # tests enqueue faster than microphone time
     config.save_transcripts = False
     config.asr.partial_interval_s = 0.4
-    config.asr.left_context_s = 1.0
-    config.asr.max_window_s = 6.0
     capture = FakeAudioCapture()
     backend = FakeBackend(RecordingTranscriber(lambda seconds: PHRASE if seconds >= 0.3 else ""))
     engine = RealtimeASR(config, backend=backend, audio_capture=capture)
