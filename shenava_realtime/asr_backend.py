@@ -1,41 +1,62 @@
-"""NeMo/Shenava ASR backend.
+"""Sherpa-ONNX streaming CTC ASR backend.
 
-Everything heavy (torch, NeMo, the checkpoint) is imported lazily inside
-:func:`NeMoASR.load`, so importing this module — and running the test-suite —
-never touches the model or a GPU.
+Everything heavy (``sherpa_onnx``, ONNX Runtime, the model files) is imported
+lazily inside :meth:`SherpaOnnxASR.load`, so importing this module — and
+running the test-suite — never touches the model.  ``torch``/``nemo``/CUDA are
+never imported anywhere in this module.
 
-The backend exposes a deliberately small surface:
+The backend exposes a small, type-hinted surface:
 
-``transcribe(audio) -> (text, confidence)``
-    decode one 16 kHz mono float32 buffer;
+``load()``
+    build the single long-lived ``sherpa_onnx.OnlineRecognizer`` for the
+    process (CPU, INT8, greedy CTC, sherpa's own endpointer disabled — the
+    existing RMS VAD is the only endpointer);
 
-``create_stream() -> CacheAwareStream | None``
-    a cache-aware streaming session, or ``None`` when the checkpoint does not
-    support it (the caller then uses endpoint-only decoding);
+``create_stream()``
+    a fresh ``sherpa_onnx.OnlineStream`` (one per VAD segment; never reused
+    across segments; never a substitute for a second recognizer);
 
-``capabilities() -> ModelCapabilities``
-    what the *loaded* checkpoint actually exposes (heads, streaming contexts,
-    tokenizer/blank), probed rather than assumed.
+``accept(stream, samples)`` / ``decode_ready(stream)`` / ``partial(stream)``
+    feed audio and decode whatever the recognizer is ready to decode;
 
-The target checkpoint is the hybrid ``Reza2kn/Shenava-Koochik-v1.5``
-(FastConformer, CTC + RNNT heads).  CTC is the production path; RNNT is
-selectable for benchmarking.  A requested capability that the checkpoint does
-not expose is a startup error, never a silent switch to the other head.
+``finalize(stream)``
+    flush the stream at a VAD endpoint (tail padding, ``input_finished``,
+    drain, final text) and return the text; the caller then discards the
+    stream and creates a new one for the next segment;
+
+``stats()``
+    runtime counters (audio seconds, processing seconds, RTF, decode count,
+    decoder errors) — never transcript or audio content;
+
+``transcribe(audio)``
+    a convenience one-shot decode built from the same recognizer, used by the
+    offline WAV tools and the utterance-end "greedy" second pass.
+
+Target model: sherpa-onnx streaming NeMo-CTC export of
+``Shenava-Koochik-v1.0`` (see ``models/shenava/README.md`` for the pinned HF
+revision and checksums).  Loading is explicit and local-only: there is no
+network fallback anywhere in this module.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol, Tuple
 
 import numpy as np
 
-from .config import REPO_ROOT, ASRConfig
+from .config import ASRConfig
 
 logger = logging.getLogger(__name__)
+
+# Tail padding appended at a VAD endpoint so the last word is not dropped by
+# the streaming encoder's lookahead. Tuned against the model-contract spike
+# (see Phase 0 report); re-validate against the real model once available.
+FINALIZE_TAIL_PADDING_S = 0.5
+
 
 class ASRBackend(Protocol):
     def transcribe(self, audio: np.ndarray) -> Tuple[str, float]:  # pragma: no cover
@@ -53,526 +74,309 @@ class CacheAwareStream(Protocol):
         ...
 
 
-class SecondPassUnavailable(RuntimeError):
-    """The context second pass cannot be built; fail clearly, do not degrade."""
+class ModelLoadError(RuntimeError):
+    """The configured model/tokens could not be loaded (explicit, no fallback)."""
 
 
-class CapabilityUnavailable(RuntimeError):
-    """A requested decoder/streaming capability is absent from the checkpoint."""
+class StreamingUnavailable(RuntimeError):
+    """The loaded model does not support streaming; the GATE forbids a fallback."""
 
 
 @dataclass(frozen=True)
 class ModelCapabilities:
-    """What the loaded checkpoint actually exposes (probed, never assumed)."""
+    """What the loaded recognizer actually exposes (probed, never assumed)."""
 
-    model_class: str
-    has_ctc_head: bool
-    has_rnnt_head: bool
-    streaming_contexts: tuple[tuple[int, int], ...]
-    supports_cache_aware_streaming: bool
+    provider: str
+    num_threads: int
     sample_rate: int
-    vocab_size: Optional[int] = None
-    ctc_blank_index: Optional[int] = None
-    rnnt_blank_index: Optional[int] = None
-
-    def heads(self) -> tuple[str, ...]:
-        return tuple(
-            name for name, present in (("ctc", self.has_ctc_head), ("rnnt", self.has_rnnt_head))
-            if present
-        )
+    feature_dim: int
+    decoding_method: str
+    streaming: bool
 
     def describe(self) -> str:
         return (
-            f"{self.model_class}: heads={','.join(self.heads()) or 'none'} "
-            f"sample_rate={self.sample_rate} "
-            f"streaming={'yes' if self.supports_cache_aware_streaming else 'no'} "
-            f"contexts={[list(c) for c in self.streaming_contexts]} "
-            f"vocab={self.vocab_size} ctc_blank={self.ctc_blank_index} "
-            f"rnnt_blank={self.rnnt_blank_index}"
+            f"sherpa-onnx CTC: provider={self.provider} threads={self.num_threads} "
+            f"sample_rate={self.sample_rate} feature_dim={self.feature_dim} "
+            f"decoding={self.decoding_method} streaming={'yes' if self.streaming else 'no'}"
         )
 
 
-def _decoding_config() -> Any:
-    """Greedy decoding config: OmegaConf when NeMo is installed, dict otherwise."""
-    settings = {"strategy": "greedy", "preserve_alignments": False}
-    try:
-        from omegaconf import OmegaConf  # noqa: PLC0415 - optional heavy dep
-    except ImportError:
-        return settings
-    return OmegaConf.create(settings)
+@dataclass
+class _Stats:
+    audio_seconds: float = 0.0
+    processing_seconds: float = 0.0
+    decode_count: int = 0
+    dropped_chunks: int = 0
+    overruns: int = 0
+    decoder_errors: int = 0
+    segments: int = 0
 
 
-def _select_logits(output: Any, vocab_size: Optional[int]) -> Any:
-    """Find the CTC logits tensor among the shapes ``model.forward`` may return."""
-    torch = None
-    candidates = [output]
-    if isinstance(output, (tuple, list)):
-        candidates = list(output)
-    for item in candidates:
+class SherpaStream:
+    """Thin wrapper around one ``sherpa_onnx.OnlineStream``.
+
+    One instance per VAD segment. Never reused across segments (a fresh
+    ``OnlineStream`` starts with a zero-filled decoder cache, which is the
+    validated state-clean lifecycle for this backend — see Phase 0 report).
+    """
+
+    def __init__(self, recognizer: Any, raw_stream: Any, sample_rate: int, stats: _Stats) -> None:
+        self._recognizer = recognizer
+        self._stream = raw_stream
+        self._sample_rate = sample_rate
+        self._stats = stats
+        self._closed = False
+        self._last_text = ""
+
+    # ------------------------------------------------------------------ #
+    def accept(self, samples: np.ndarray) -> None:
+        """Feed one contiguous float32 mono block in [-1, 1] at 16 kHz."""
+        if self._closed:
+            raise RuntimeError("Stream already finalized; create a new stream instead")
+        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return
+        if not np.isfinite(samples).all():
+            raise ValueError("Non-finite audio")
+        self._stream.accept_waveform(self._sample_rate, samples)
+        self._stats.audio_seconds += samples.size / float(self._sample_rate)
+
+    def decode_ready(self) -> None:
+        """Run every decode step the recognizer is currently ready for."""
+        started = time.perf_counter()
         try:
-            ndim = item.dim()
-        except AttributeError:
-            continue
-        if ndim == 3 and item.shape[0] == 1:
-            if vocab_size is None or int(item.shape[2]) == vocab_size:
-                return item[0]
-        if ndim == 2 and (vocab_size is None or int(item.shape[1]) == vocab_size):
-            return item
-    return None
+            while self._recognizer.is_ready(self._stream):
+                self._recognizer.decode_stream(self._stream)
+                self._stats.decode_count += 1
+        except Exception:
+            self._stats.decoder_errors += 1
+            raise
+        finally:
+            self._stats.processing_seconds += time.perf_counter() - started
+
+    def partial(self) -> str:
+        """The current (cumulative) hypothesis without finalizing."""
+        text = self._recognizer.get_result(self._stream)
+        self._last_text = text if isinstance(text, str) else str(text)
+        return self._last_text
+
+    # ------------------------------------------------------------------ #
+    def push(self, audio: np.ndarray) -> Tuple[str, float]:
+        """``CacheAwareStream`` compatibility: accept + decode + text."""
+        self.accept(audio)
+        self.decode_ready()
+        return self.partial(), 0.0
+
+    def finalize(self) -> Tuple[str, float]:
+        """VAD-endpoint flush: tail padding, ``input_finished``, drain, final text.
+
+        The stream must be discarded after this call; the caller creates a
+        new stream (via :meth:`SherpaOnnxASR.create_stream`) for the next
+        segment. This wrapper never reuses ``self`` after finalizing.
+        """
+        if not self._closed:
+            pad = np.zeros(int(FINALIZE_TAIL_PADDING_S * self._sample_rate), dtype=np.float32)
+            self.accept(pad)
+            self._stream.input_finished()
+            self.decode_ready()
+            self.partial()
+            self._closed = True
+            self._stats.segments += 1
+        return self._last_text, 0.0
+
+    def reset(self) -> None:
+        """``CacheAwareStream``/``StreamingDecoder`` contract compatibility.
+
+        Per the locked design, streams are not reused across VAD segments —
+        the engine creates a fresh :class:`SherpaStream` for every segment via
+        ``backend.create_stream()``. This method exists only so callers that
+        expect the ``reset()`` contract (e.g. ``streaming.CacheAwareDecoder``)
+        keep working; it is a no-op here because there is no in-place state to
+        clear (the object is discarded, not reused).
+        """
+        return None
 
 
-class NeMoASR:
-    """Loads the Shenava checkpoint and decodes with its CTC head."""
+class SherpaOnnxASR:
+    """Loads the sherpa-onnx streaming CTC model and owns the one recognizer."""
 
     def __init__(self, config: Optional[ASRConfig] = None) -> None:
         self.config = config or ASRConfig()
-        self._model: Any = None
-        self._torch: Any = None
-        self._streaming_supported = False
+        self._recognizer: Any = None
         self._capabilities: Optional[ModelCapabilities] = None
-        self.decoder_type: str = self.config.resolved_decoder
         self.device: str = "cpu"
         self.load_seconds: float = 0.0
+        self._stats = _Stats()
 
     # ------------------------------------------------------------------ #
     @property
-    def model(self) -> Any:
-        if self._model is None:
+    def recognizer(self) -> Any:
+        if self._recognizer is None:
             self.load()
-        return self._model
+        return self._recognizer
 
-    def resolve_device(self) -> str:
-        torch = self._import_torch()
-        requested = (self.config.device or "auto").strip().lower()
-        if requested in ("", "auto"):
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        if requested.startswith("cuda") and not torch.cuda.is_available():
-            logger.warning("CUDA requested but unavailable; falling back to CPU")
-            return "cpu"
-        return requested
-
-    def _import_torch(self) -> Any:
-        if self._torch is None:
-            try:
-                import torch  # noqa: PLC0415 - deliberately lazy
-            except ImportError as exc:  # pragma: no cover - environment dependent
-                raise RuntimeError(
-                    "PyTorch is required for the ASR backend. "
-                    "Install the ASR extras: pip install -r requirements-asr.txt"
-                ) from exc
-            self._torch = torch
-        return self._torch
+    def _resolve_path(self, raw: Optional[str], label: str) -> Path:
+        if not raw:
+            raise ModelLoadError(
+                f"{label} is not configured. Set SHENAVA_MODEL_PATH / "
+                "SHENAVA_TOKENS_PATH (see models/shenava/README.md for how to "
+                "provision the sherpa-onnx model)."
+            )
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            from .config import REPO_ROOT
+            path = REPO_ROOT / path
+        return path
 
     def load(self) -> None:
-        """Load a trusted local checkpoint; network provisioning requires opt-in."""
-        if self._model is not None:
+        """Load the local sherpa-onnx model; explicit errors, no fallback."""
+        if self._recognizer is not None:
             return
         self.config.__post_init__()
-        checkpoint = self.resolve_checkpoint_path()
-        if checkpoint is None and not self.config.allow_download:
-            raise FileNotFoundError(
-                f"Local Shenava checkpoint not found: {self.config.model_path}. "
-                "Provision a trusted .nemo file or explicitly enable SHENAVA_ALLOW_DOWNLOAD."
+
+        model_path = self._resolve_path(self.config.model_path, "SHENAVA_MODEL_PATH")
+        if not model_path.is_file():
+            raise ModelLoadError(
+                f"Local sherpa-onnx model not found: {model_path}. Provision it "
+                "with the documented `hf download` command in "
+                "models/shenava/README.md (no automatic downloads)."
             )
-        torch = self._import_torch()
-        started = time.time()
+        if model_path.suffix == ".nemo":
+            raise ModelLoadError(
+                f"{model_path} is a legacy NeMo checkpoint; the runtime now "
+                "loads a sherpa-onnx ONNX model (model.int8.onnx + tokens.txt)."
+            )
+        if model_path.suffix != ".onnx":
+            raise ModelLoadError(
+                f"SHENAVA_MODEL_PATH must point at a .onnx file, got {model_path}"
+            )
+
+        tokens_path = self._resolve_path(self.config.tokens_path, "SHENAVA_TOKENS_PATH")
+        if not tokens_path.is_file():
+            raise ModelLoadError(
+                f"Local tokens file not found: {tokens_path}. Provision it with "
+                "the documented `hf download` command in models/shenava/README.md."
+            )
+        if tokens_path.suffix != ".txt":
+            raise ModelLoadError(
+                f"SHENAVA_TOKENS_PATH must point at a .txt file, got {tokens_path}"
+            )
 
         try:
-            import nemo.collections.asr as nemo_asr  # noqa: PLC0415
+            import sherpa_onnx
         except ImportError as exc:  # pragma: no cover - environment dependent
-            raise RuntimeError(
-                "nemo_toolkit[asr] is required for the ASR backend. "
-                "Install the ASR extras: pip install -r requirements-asr.txt"
+            raise ModelLoadError(
+                "sherpa-onnx is required for the ASR backend. "
+                "Install it: pip install -r requirements-asr.txt"
             ) from exc
 
-        checkpoint = self.resolve_checkpoint_path()
-        if checkpoint is not None:
-            logger.info("loading local checkpoint: %s", checkpoint)
-            model = nemo_asr.models.ASRModel.restore_from(str(checkpoint), map_location="cpu")
-        else:
-            if self.config.model_path:
-                logger.warning(
-                    "checkpoint %s not found; downloading %s",
-                    self.config.model_path,
-                    self.config.model_name,
-                )
-            model = nemo_asr.models.ASRModel.from_pretrained(self.config.model_name)
+        if self.config.sample_rate != 16000:
+            raise ModelLoadError("Shenava requires a 16 kHz mono frontend")
 
-        self.device = self.resolve_device()
-        model = model.to(self.device)
-        model.eval()
-        if self.device.startswith("cpu"):
-            torch.set_num_threads(max(1, int(self.config.num_threads)))
+        started = time.time()
+        try:
+            recognizer = sherpa_onnx.OnlineRecognizer.from_nemo_ctc(
+                tokens=str(tokens_path),
+                model=str(model_path),
+                num_threads=int(self.config.num_threads),
+                sample_rate=int(self.config.sample_rate),
+                feature_dim=int(self.config.feature_dim),
+                decoding_method=self.config.decoding_method,
+                provider="cpu",
+                # The RMS VAD already owns utterance boundaries; sherpa's own
+                # endpointer must stay off so there is exactly one endpointer.
+                enable_endpoint_detection=False,
+            )
+        except Exception as exc:
+            raise ModelLoadError(
+                f"sherpa-onnx failed to initialise the recognizer from "
+                f"{model_path} / {tokens_path}: {exc}"
+            ) from exc
+        if recognizer is None:
+            raise ModelLoadError(
+                "sherpa_onnx.OnlineRecognizer.from_nemo_ctc returned no recognizer"
+            )
 
-        self.decoder_type = self.config.resolved_decoder
-        capabilities = self._probe_capabilities(model)
-        self._validate_startup(capabilities, self.decoder_type)
-        self._select_head(model, self.decoder_type)
-        self._model = model
-        self._capabilities = capabilities
-        self._streaming_supported = capabilities.supports_cache_aware_streaming
-        if self._streaming_supported:
-            encoder = model.encoder
-            encoder.set_default_att_context_size([70, self.config.right_context])
-            encoder.setup_streaming_params()
-            self._apply_cuda_graph_option(model)
+        # GATE: the model must load as a streaming (online) recognizer. There
+        # is no fallback to OfflineRecognizer here, ever.
+        streaming = self._probe_streaming(recognizer)
+        if self.config.require_streaming and not streaming:
+            raise StreamingUnavailable(
+                "SHENAVA_REQUIRE_STREAMING is set but the loaded model does not "
+                "behave as an online/streaming recognizer. Refusing to fall "
+                "back to an offline decoder."
+            )
+
+        self.device = "cpu"
+        self._recognizer = recognizer
+        self._capabilities = ModelCapabilities(
+            provider="cpu",
+            num_threads=int(self.config.num_threads),
+            sample_rate=int(self.config.sample_rate),
+            feature_dim=int(self.config.feature_dim),
+            decoding_method=self.config.decoding_method,
+            streaming=streaming,
+        )
         self.load_seconds = time.time() - started
-        logger.info("model capabilities — %s", capabilities.describe())
         logger.info(
-            "ASR model ready on %s in %.1fs (%s, head=%s)",
-            self.device, self.load_seconds, type(model).__name__, self.decoder_type,
+            "ASR backend ready in %.2fs — %s | model=%s tokens=%s",
+            self.load_seconds, self._capabilities.describe(), model_path, tokens_path,
         )
 
-    # ------------------------------------------------------------------ #
-    # Capability probing and startup validation
+    def _probe_streaming(self, recognizer: Any) -> bool:
+        """Confirm the recognizer behaves as an online/streaming model.
+
+        A stream must accept incremental ``accept_waveform`` calls and report
+        readiness via ``is_ready`` without requiring the whole utterance up
+        front. This is checked mechanically (not assumed from the model name).
+        """
+        try:
+            stream = recognizer.create_stream()
+            probe = np.zeros(1600, dtype=np.float32)  # 100ms, far under 22s cap
+            stream.accept_waveform(int(self.config.sample_rate), probe)
+            has_ready = hasattr(recognizer, "is_ready") and hasattr(recognizer, "decode_stream")
+            has_result = hasattr(recognizer, "get_result")
+            return bool(has_ready and has_result)
+        except Exception as exc:
+            logger.warning("streaming capability probe failed: %s", exc)
+            return False
+
     # ------------------------------------------------------------------ #
     def capabilities(self) -> ModelCapabilities:
-        """Probed capabilities of the loaded checkpoint (loads it if needed)."""
         if self._capabilities is None:
             self.load()
         assert self._capabilities is not None
         return self._capabilities
 
-    def _probe_capabilities(self, model: Any) -> ModelCapabilities:
-        """Inspect the actual loaded model; never infer from the model name."""
-        encoder = getattr(model, "encoder", None)
-        contexts = self._streaming_contexts(encoder)
-        streaming = bool(contexts) and callable(getattr(model, "conformer_stream_step", None))
-        sample_rate = int(getattr(getattr(model, "cfg", None), "preprocessor", None)
-                          and getattr(model.cfg.preprocessor, "sample_rate", 0) or 0)
-        vocab_size = None
-        try:
-            _tok, _dec, vocab_size = self._probe_tokenizer(model)
-        except SecondPassUnavailable:
-            vocab_size = None
-        # A hybrid checkpoint exposes both heads; a pure model exposes one.
-        has_ctc = any(
-            callable(getattr(model, name, None)) or getattr(model, name, None) is not None
-            for name in ("ctc_decoder", "ctc_decoding")
-        ) or hasattr(model, "decoder") and not hasattr(model, "joint")
-        has_rnnt = getattr(model, "joint", None) is not None and getattr(
-            model, "decoder", None) is not None and hasattr(model, "decoding")
-        return ModelCapabilities(
-            model_class=type(model).__name__,
-            has_ctc_head=bool(has_ctc),
-            has_rnnt_head=bool(has_rnnt),
-            streaming_contexts=contexts,
-            supports_cache_aware_streaming=streaming,
-            sample_rate=sample_rate,
-            vocab_size=vocab_size,
-            ctc_blank_index=self._probe_blank_index(model, vocab_size) if vocab_size else None,
-            rnnt_blank_index=self._probe_rnnt_blank(model),
-        )
-
-    @staticmethod
-    def _streaming_contexts(encoder: Any) -> tuple[tuple[int, int], ...]:
-        contexts = getattr(encoder, "att_context_size_all", None)
-        if not contexts:
-            current = getattr(encoder, "att_context_size", None)
-            contexts = [current] if current is not None and len(current) == 2 else []
-        return tuple(tuple(int(v) for v in c) for c in contexts if len(c) == 2)
-
-    def _validate_startup(self, capabilities: ModelCapabilities, decoder_type: str) -> None:
-        """Fail at startup — with a useful message — on any missing capability."""
-        if capabilities.sample_rate and capabilities.sample_rate != 16000:
-            raise CapabilityUnavailable(
-                "Shenava requires a 16 kHz mono frontend; this checkpoint's "
-                f"preprocessor is configured for {capabilities.sample_rate} Hz"
-            )
-        if decoder_type == "ctc" and not capabilities.has_ctc_head:
-            raise CapabilityUnavailable(
-                f"decoder=ctc requested but {capabilities.model_class} exposes no CTC head "
-                f"(available: {', '.join(capabilities.heads()) or 'none'})"
-            )
-        if decoder_type == "rnnt":
-            if not capabilities.has_rnnt_head:
-                raise CapabilityUnavailable(
-                    f"decoder=rnnt requested but {capabilities.model_class} exposes no "
-                    "RNNT prediction network/joint "
-                    f"(available: {', '.join(capabilities.heads()) or 'none'}). "
-                    "Use --decoder ctc or a hybrid checkpoint such as "
-                    "Reza2kn/Shenava-Koochik-v1.5."
-                )
-            if capabilities.vocab_size is None:
-                raise CapabilityUnavailable(
-                    "decoder=rnnt requires the model's own tokenizer/vocabulary; "
-                    "this checkpoint exposes none"
-                )
-            if capabilities.rnnt_blank_index is None:
-                raise CapabilityUnavailable(
-                    "decoder=rnnt requires a resolvable RNNT blank id; the loaded "
-                    "checkpoint's joint/decoding exposes none"
-                )
-        if self.config.use_cache_aware_streaming and capabilities.streaming_contexts:
-            requested = (70, int(self.config.right_context))
-            if requested not in capabilities.streaming_contexts:
-                raise CapabilityUnavailable(
-                    "Encoder supports streaming contexts "
-                    f"{[list(c) for c in capabilities.streaming_contexts]}; "
-                    f"right_context={self.config.right_context} is not one of them. "
-                    "Choose a supported right context (--right-context / "
-                    "SHENAVA_RIGHT_CONTEXT)."
-                )
-        if self.config.require_streaming and not capabilities.supports_cache_aware_streaming:
-            raise CapabilityUnavailable(
-                "require_streaming is set but this checkpoint exposes no "
-                "cache-aware streaming API (conformer_stream_step)"
-            )
-
-    def _select_head(self, model: Any, decoder_type: str) -> None:
-        """Switch the model to the requested head via its own NeMo API."""
-        decoding = _decoding_config()
-        change = getattr(model, "change_decoding_strategy", None)
-        if not callable(change):
-            raise CapabilityUnavailable(
-                f"{type(model).__name__} has no change_decoding_strategy(); "
-                "explicit head selection is not possible for this checkpoint"
-            )
-        try:
-            # Hybrid checkpoints (v1.5) take decoder_type; single-head models
-            # reject it — that difference is probed, not guessed.
-            change(decoding, decoder_type=decoder_type)
-        except TypeError:
-            if decoder_type != "ctc":
-                raise CapabilityUnavailable(
-                    f"{type(model).__name__}.change_decoding_strategy() does not accept "
-                    f"decoder_type; head '{decoder_type}' cannot be selected"
-                ) from None
-            change(decoding)
-
-    def _apply_cuda_graph_option(self, model: Any) -> None:
-        """Optional CUDA-graph streaming; eager execution is the reference path.
-
-        Off by default and never enabled implicitly — no profiling in this
-        repository demonstrates a benefit.  When requested and unsupported by
-        the installed NeMo/decoding objects, this raises rather than pretending
-        the optimisation was applied.
-        """
-        if not self.config.cuda_graph_streaming:
-            return
-        decoding = getattr(model, "decoding", None)
-        target = getattr(decoding, "decoding", None) if decoding is not None else None
-        if target is None or not hasattr(target, "use_cuda_graph_decoder"):
-            raise CapabilityUnavailable(
-                "cuda_graph_streaming was requested but the loaded decoding "
-                "strategy exposes no use_cuda_graph_decoder flag; unset "
-                "SHENAVA_CUDA_GRAPH_STREAMING to use the eager reference path"
-            )
-        target.use_cuda_graph_decoder = True
-        logger.info("CUDA-graph streaming enabled (optimisation, not the reference path)")
-
-    def _probe_rnnt_blank(self, model: Any) -> Optional[int]:
-        for holder_name in ("decoding", "joint", "decoder"):
-            holder = getattr(model, holder_name, None)
-            if holder is None:
-                continue
-            for attr in ("blank_id", "blank_idx", "_blank_index", "blank_index"):
-                value = getattr(holder, attr, None)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    return value
-        return None
-
-    def resolve_checkpoint_path(self) -> Optional[Path]:
-        """Find the configured checkpoint, tolerating relative paths.
-
-        ``.env`` typically holds a path relative to the repository, so a run
-        started from another working directory must not silently fall back to a
-        network download.
-        """
-        raw = self.config.model_path
-        if not raw:
-            return None
-        candidate = Path(raw).expanduser()
-        for path in (candidate, REPO_ROOT / candidate) if not candidate.is_absolute() else (candidate,):
-            if path.is_file():
-                return path
-        return None
+    def create_stream(self) -> SherpaStream:
+        """A fresh stream for one VAD segment (never reused across segments)."""
+        recognizer = self.recognizer
+        raw_stream = recognizer.create_stream()
+        return SherpaStream(recognizer, raw_stream, int(self.config.sample_rate), self._stats)
 
     # ------------------------------------------------------------------ #
     def transcribe(self, audio: np.ndarray) -> Tuple[str, float]:
-        """Decode one buffer and return ``(text, confidence)``."""
-        if self._model is None:
-            self.load()
+        """Decode one full buffer via a throwaway stream (offline convenience)."""
         samples = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
         if samples.size == 0:
             return "", 0.0
-
-        torch = self._import_torch()
-        with torch.no_grad():
-            outputs = self._model.transcribe(
-                [samples],
-                batch_size=1,
-                verbose=False,
-                return_hypotheses=True,
-            )
-        return self._extract(outputs)
-
-    def create_stream(self) -> Optional[CacheAwareStream]:
-        """Cache-aware stream for the selected head, or ``None`` (endpoint-only).
-
-        The RNNT stream reuses the tested CTC frontend accounting; only the
-        active decoding head differs, and the required capability is checked
-        before anything is decoded.
-        """
-        if self._model is None:
-            self.load()
-        if not self.config.use_cache_aware_streaming or not self._streaming_supported:
-            return None
-        torch = self._import_torch()
-        if self.decoder_type == "rnnt":
-            from .rnnt_stream import RNNTCacheAwareStream
-            return RNNTCacheAwareStream(self._model, torch, self.config.max_segment_s)
-        from .native_stream import NeMoCacheAwareStream
-        return NeMoCacheAwareStream(self._model, torch, self.config.max_segment_s)
-
-    def build_rnnt_decoder(self):
-        """Offline RNNT decoder (benchmark + RNNT endpoint second pass)."""
-        from .rnnt_stream import RNNTOfflineDecoder
-        return RNNTOfflineDecoder(self.model, self._import_torch())
+        stream = self.create_stream()
+        stream.accept(samples)
+        text, _ = stream.finalize()
+        return text, 0.0
 
     # ------------------------------------------------------------------ #
-    # Context second pass (CTC beam + hotword biasing).  Every probe below is
-    # explicit: a mismatched checkpoint API raises SecondPassUnavailable at
-    # startup instead of silently running a different decoder.
-    # ------------------------------------------------------------------ #
-    def build_second_pass(self, config: "ASRConfig"):
-        """Decoder-aware endpoint second pass.
-
-        CTC -> CTC beam + reviewed hotword bias.  RNNT -> RNNT re-decode.  The
-        two heads are never cross-run here; that only happens in the offline
-        benchmark tool.
-        """
-        from .second_pass import BeamSecondPass, GreedySecondPass
-
-        model = self.model  # ensures the checkpoint is loaded
-        if self.decoder_type == "rnnt":
-            from .rnnt_stream import RNNTSecondPass
-            logger.info("second pass ready: rnnt endpoint re-decode")
-            return RNNTSecondPass(self.build_rnnt_decoder())
-        torch = self._import_torch()
-        tokenize, decode_tokens, vocab_size = self._probe_tokenizer(model)
-        emissions_fn = self._probe_emissions(model, torch, vocab_size)
-        blank = self._probe_blank_index(model, vocab_size)
-        logger.info(
-            "second pass ready: beam=%d vocab=%d blank=%d",
-            config.second_pass_beam_size, vocab_size, blank,
-        )
-        return BeamSecondPass(
-            emissions_fn,
-            tokenize,
-            decode_tokens,
-            blank,
-            config.second_pass_beam_size,
-            GreedySecondPass(self.transcribe),
-            config.hotword_acoustic_gate,
-        )
-
-    def _probe_tokenizer(self, model: Any) -> tuple:
-        spec = getattr(model, "tokenizer", None) or getattr(model, "_tokenizer", None)
-        if spec is None:
-            raise SecondPassUnavailable("checkpoint exposes no tokenizer; hotword biasing needs the model's own BPE vocabulary")
-        inner = getattr(spec, "tokenizer", spec)
-
-        def tokenize(text: str) -> list[int]:
-            if not hasattr(inner, "encode"):
-                raise SecondPassUnavailable("tokenizer has no encode()")
-            try:
-                ids = inner.encode(text)
-            except TypeError:
-                ids = inner.encode(text, add_special_tokens=False)
-            if isinstance(ids, str):
-                ids = ids.split()
-            return [int(x) for x in ids]
-
-        vocab = None
-        getter = getattr(inner, "get_vocab", None)
-        if callable(getter):
-            try:
-                vocab = getter()
-            except Exception:
-                vocab = None
-        if vocab is None:
-            attr = getattr(inner, "vocab", None)
-            if isinstance(attr, (list, dict)):
-                vocab = attr
-        if vocab is None:
-            raise SecondPassUnavailable("tokenizer exposes no vocabulary for token->text decoding")
-        if isinstance(vocab, dict):
-            keys = list(vocab)[:8]
-            if keys and all(isinstance(k, int) for k in keys):
-                vocab = [vocab[k] for k in sorted(vocab)]
-            else:
-                vocab = [str(value) for value in vocab.values()]
-        if not vocab:
-            raise SecondPassUnavailable("tokenizer vocabulary is empty")
-
-        if hasattr(inner, "decode"):
-            def decode_tokens(ids) -> str:
-                return inner.decode(list(ids))
-        else:
-            def decode_tokens(ids) -> str:
-                parts = [vocab[i] if 0 <= i < len(vocab) else "" for i in ids]
-                text = "".join(parts).replace("\u2581", " ").strip()
-                return " ".join(text.split())
-        return tokenize, decode_tokens, len(vocab)
-
-    def _probe_emissions(self, model: Any, torch: Any, vocab_size: int):
-        preprocessor = getattr(model, "preprocessor", None)
-        if preprocessor is None or not hasattr(model, "forward"):
-            raise SecondPassUnavailable("checkpoint has no preprocessor/forward for CTC emissions")
-
-        def emissions_fn(audio: np.ndarray) -> np.ndarray:
-            samples = np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
-            with torch.inference_mode():
-                signal = torch.from_numpy(samples).unsqueeze(0).to(model.device)
-                length = torch.tensor([samples.size], device=model.device, dtype=torch.long)
-                processed, processed_length = preprocessor(input_signal=signal, length=length)
-                output = model.forward(processed, processed_length)
-            logits = _select_logits(output, vocab_size)
-            if logits is None:
-                raise SecondPassUnavailable(
-                    "model.forward did not return CTC logits with vocabulary "
-                    f"{vocab_size}; the context second pass is not available for this checkpoint"
-                )
-            log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-            return log_probs.detach().cpu().numpy().astype(np.float32)
-
-        return emissions_fn
-
-    def _probe_blank_index(self, model: Any, vocab_size: Optional[int]) -> int:
-        for module_name in ("ctc_decoder", "_ctc_decoder", "ctc_decoding", "_ctc_decoding"):
-            decoder = getattr(model, module_name, None)
-            if decoder is None:
-                continue
-            for attr in ("ctc_blank_index", "blank_index", "_blank_index"):
-                value = getattr(decoder, attr, None)
-                if isinstance(value, int) and 0 <= value < (vocab_size or value + 1):
-                    return value
-        # NeMo convention: the CTC blank is token 0.
-        logger.debug("no explicit ctc_blank_index found; using NeMo convention (0)")
-        return 0
-
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _extract(outputs: Any) -> Tuple[str, float]:
-        """Pull text/score out of the many shapes NeMo can return."""
-        if outputs is None:
-            return "", 0.0
-        if not isinstance(outputs, (list, tuple)):
-            outputs = [outputs]
-        if not outputs:
-            return "", 0.0
-
-        first = outputs[0]
-        if isinstance(first, str):
-            text = first
-        elif isinstance(first, dict):
-            text = str(first.get("text", "") or "")
-        elif isinstance(first, (list, tuple)):
-            return NeMoASR._extract(first)
-        else:
-            text = str(getattr(first, "text", "") or "")
-
-        # NeMo hypothesis scores are NOT calibrated confidence. Keep the
-        # legacy tuple/callback slot at zero (unknown), never invent a value.
-        return text.strip(), 0.0
+    def stats(self) -> dict:
+        """Runtime counters only — never transcript or audio content."""
+        audio = self._stats.audio_seconds
+        processing = self._stats.processing_seconds
+        return {
+            "audio_seconds": audio,
+            "processing_seconds": processing,
+            "rtf": (processing / audio) if audio > 0 else 0.0,
+            "decode_count": self._stats.decode_count,
+            "dropped_chunks": self._stats.dropped_chunks,
+            "overruns": self._stats.overruns,
+            "decoder_errors": self._stats.decoder_errors,
+            "segments": self._stats.segments,
+        }

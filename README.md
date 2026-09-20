@@ -5,7 +5,7 @@ embeddings, vector database, edit-distance or semantic matching.
 
 ```text
 16 kHz mono audio → adaptive RMS VAD → bounded queue
-  → Shenava v1.5 decoder (CTC production | RNNT experimental)
+  → Shenava-Koochik-v1.0 streaming CTC decoder (sherpa-onnx, CPU, INT8)
   → stabilization → endpoint second pass → Persian normalization → protected spans
   → token Aho–Corasick → deterministic span resolver → typed grammars
   → canonical stable text → overlay / keyboard / clipboard
@@ -37,11 +37,11 @@ speech activity and a synthetic ASR backend**, but real capture/VAD orchestratio
 ASR worker, stabilization, normalization and extraction. It does not measure
 recognition accuracy or test a microphone.
 
-For recognition, install matching PyTorch/torchaudio wheels for your platform,
-then the ASR stack. The native adapter targets NeMo **2.4.0** and the requirements
-specify a matching Torch/torchaudio 2.7.1 pair. Use a supported Linux/CUDA or CPU
-environment; availability of NeMo's compiled dependencies on native Windows
-varies. Keep the desktop process on a machine with microphone/display access.
+For recognition, install `sherpa-onnx` (CPU) — there is no PyTorch, NeMo or
+GPU dependency anywhere in the runtime path. `sherpa-onnx` bundles its own
+ONNX Runtime, so nothing else is required. This runs on any platform
+`sherpa-onnx` publishes CPU wheels for (Linux/macOS/Windows). Keep the desktop
+process on a machine with microphone/display access.
 
 ```bash
 pip install -r requirements-asr.txt
@@ -56,74 +56,65 @@ inject into your local desktop; this repository is not a browser application.
 
 ### Models
 
-Primary: **Shenava Koochik v1.5, 114M**, hybrid FastConformer with **both** a
-CTC and an RNNT head. Per the publisher's model card, v1.5 keeps the v1.0 CTC
-head unchanged (the encoder was frozen during the corrective finetune) and
-repairs the RNNT head that was broken in v1.0. **CTC remains the production
-default here**; RNNT is selectable for benchmarking and controlled experiments.
-The bundled [model card](shenava-koochik/README.md) documents contexts
-`[70,13]`, `[70,6]`, `[70,1]`, `[70,0]` and model provenance.
+**Shenava-Koochik-v1.0** (114M), FastConformer, **CTC-only streaming export**
+running on [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) + ONNX Runtime
+(CPU, INT8, greedy CTC decoding). There is no RNNT head, no second pass beam
+search over raw emissions, and no GPU/CUDA path in this backend — see
+`docs/REVIEW.md` / the migration report for what was intentionally dropped
+when this repository moved off NeMo/PyTorch.
 
-Provision the trusted `.nemo` checkpoint from
-[Reza2kn/Shenava-Koochik-v1.5](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.5)
-onto local storage, then set `SHENAVA_MODEL_PATH` or use `--model`. The default is
-`shenava-koochik/shenava-koochik-v1.5.nemo`. **Weights are not included.**
-NeMo checkpoints are executable serialization artifacts: do not load untrusted
-files. Verify the publisher's checksum when provisioning.
+- **Source**: HF repo
+  [`mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26`](https://huggingface.co/mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26),
+  pinned revision `4be3d2375c98a985154122d69b43360eb8bdca5a`.
+- **License: CC-BY-NC 4.0** (inherited from the parent
+  `Reza2kn/Shenava-Koochik-v1.0` checkpoint) — **non-commercial**. Confirm this
+  is compatible with your deployment before using the model.
+- **Canonical local path**: `models/shenava/` (git-ignored). See
+  [`models/shenava/README.md`](models/shenava/README.md) for the exact
+  `hf download` command, pinned revision and sha256 checksums of both files.
+  The `Shenava-Koochik-v1.5/` directory in the repo root is a leftover git
+  submodule pointer from the NeMo era (a `.nemo` checkpoint location); nothing
+  in this codebase reads it any more and no config defaults to it. Do
+  **not** put files there — `models/shenava/` is the only path the backend
+  or its documentation reference.
 
-Missing local files fail clearly **before importing the model stack**. There is
-no automatic network fallback. `--allow-download` / `SHENAVA_ALLOW_DOWNLOAD=1`
-explicitly enables provisioning with `ASRModel.from_pretrained(model_name)`;
-normal deployed inference should leave this disabled.
+Provision the model once with the documented command in
+`models/shenava/README.md`, then set `SHENAVA_MODEL_PATH` /
+`SHENAVA_TOKENS_PATH` (defaults already point at `models/shenava/`) or use
+`--model` / `--tokens`. **Weights are not included in this repository.**
 
-For a smaller model, select a locally provisioned Shenava Rizeh (32M) or
-Rizeh-Pizeh (6.9M) `.nemo` file. Streaming support is checked from the **actual
-encoder metadata**, not assumed from its name. No automatic second checkpoint
-is loaded, avoiding doubled RAM and surprising model changes.
+Missing local files fail clearly **before importing sherpa-onnx**. There is
+**no automatic network fallback anywhere in the runtime path** — provisioning
+is always the manual `hf download` command in `models/shenava/README.md`.
 
 ## Run
 
-### 1. Default: CTC production path
+### 1. Default: streaming CTC (sherpa-onnx, CPU, INT8)
 
 ```bash
-python main.py --model /models/shenava-koochik-v1.5.nemo --device cpu
-# Strict native-streaming mode (recommended for deployment validation):
-python main.py --model /models/shenava-koochik-v1.5.nemo --require-streaming \
-  --right-context 13 --output-mode console --no-overlay --no-inject
-# Disable (or restrict) the utterance-end second-pass decoder:
-python main.py --model /models/shenava-koochik-v1.5.nemo --second-pass off
-python main.py --model /models/shenava-koochik-v1.5.nemo \
-  --second-pass context --hotword-specialty cardiology --beam-size 4
-# Let reviewed aliases/phonetic variants bias the CTC second pass (opt-in):
-python main.py --second-pass context --hotword-aliases --hotword-phonetic
+python main.py --model models/shenava/model.int8.onnx \
+  --tokens models/shenava/tokens.txt --device cpu
+# Strict streaming mode (recommended for deployment validation; the GATE
+# never falls back to an offline decoder regardless of this flag):
+python main.py --require-streaming --output-mode console --no-overlay --no-inject
+# Disable the utterance-end second-pass decoder:
+python main.py --second-pass off
 python main.py --list-devices
 ```
 
-`--decoder auto` is accepted and resolves explicitly to CTC.
+There is no `--decoder`/RNNT option any more: this backend is CTC-only. There
+is also no `second_pass=context` (CTC beam + hotword biasing) any more —
+sherpa-onnx's public Python API exposes only decoded text, not the raw
+per-frame emissions or tokenizer object that mode needed; it is rejected at
+startup with a message naming `greedy`/`off` as the alternatives.
 
-### 2. RNNT experimental mode
-
-```bash
-python main.py --model /models/shenava-koochik-v1.5.nemo --decoder rnnt \
-  --output-mode console --no-inject
-```
-
-RNNT requires a hybrid checkpoint. On a CTC-only checkpoint the run **fails at
-startup** with the heads the checkpoint actually exposes — it never falls back
-to CTC silently. The RNNT endpoint second pass re-decodes with RNNT only; CTC
-and RNNT are never cross-run outside the offline benchmark tool. Reviewed
-hotword biasing applies to the CTC beam and is not transferred to the
-transducer.
-
-### 3. Benchmark / evaluation
+### 2. Benchmark / evaluation
 
 ```bash
 # Real audio (this is the one that measures recognition accuracy):
-python tools/evaluate_audio.py corpus.jsonl --system v1.5-ctc  --report ctc.json
-python tools/evaluate_audio.py corpus.jsonl --system v1.5-rnnt --report rnnt.json
-python tools/evaluate_audio.py corpus.jsonl --system v1.0-ctc \
-  --model /models/shenava-koochik-v1.0.nemo --report v10.json
-python tools/evaluate_audio.py --compare v10.json ctc.json rnnt.json
+python tools/evaluate_audio.py corpus.jsonl --report ctc.json \
+  --model models/shenava/model.int8.onnx --tokens models/shenava/tokens.txt
+python tools/evaluate_audio.py --compare ctc.json other.json
 
 # Deterministic text regression (NOT recognition accuracy):
 python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
@@ -161,53 +152,49 @@ launcher for detached desktop use; prefer the foreground command while debugging
 
 ## Streaming behavior and tuning
 
-- Native path uses `encoder.get_initial_cache_state()` and
-  `model.conformer_stream_step()`, with encoder channel/time/length caches,
-  previous CTC predictions, pre-encoder feature overlap and an explicit final
-  flush (`keep_all_outputs=True`). There is **no repeated encoder window**.
-- The frontend recomputes only bounded hop-aligned STFT overlap, waits for stable
-  right-edge features, and applies NeMo online chunk normalization. It requires
-  centered STFT with no frame splicing; unsupported frontend configuration is an
-  explicit initialization error. Online normalization may differ in accuracy
-  from the publisher's offline evaluation—measure on your own audio.
-- Default right context is 13 for quality. Choose 6, 1 or 0 for less lookahead.
-  Values outside `{0, 1, 6, 13}` are rejected when the configuration loads.
-  A streaming-capable encoder that does not list `[70, right_context]` in its
-  metadata fails at startup with the supported contexts; only checkpoints with
-  no native streaming support fall back to endpoint-only decoding (with an
-  explicit warning, and rejected under `require_streaming`).
-  Koochik's encoder step is approximately 80 ms; this is **not** an end-to-end
-  latency guarantee. NeMo metadata determines chunk/shift/cache sizes.
-- `partial_interval_s` (default 0.5 s) batches new mic blocks before handing them
-  to the native session; it does not override encoder lookahead.
-- Unsupported/offline checkpoints use **endpoint-only CTC**, once per segment,
-  with an explicit startup warning. `require_streaming=true` rejects this mode.
-  A broken native adapter does not silently fall back.
+- The ASR backend (`shenava_realtime/asr_backend.py`) owns exactly **one**
+  long-lived `sherpa_onnx.OnlineRecognizer` for the process, built once at
+  startup (CPU, INT8, greedy CTC decoding). **Every VAD segment gets a fresh
+  `OnlineStream`** — streams are never reused/reset across segments, since a
+  new stream starts with a zero-filled decoder cache (verified state-clean
+  lifecycle; see the migration report). Sherpa-onnx's own endpointer is always
+  disabled (`enable_endpoint_detection=False`): the existing RMS VAD is the
+  **only** endpointer.
+- At a VAD end the engine appends 0.5 s of trailing silence to the stream
+  (`FINALIZE_TAIL_PADDING_S` in `asr_backend.py`) before calling
+  `input_finished()`, so the last word is not dropped by the streaming
+  encoder's lookahead, drains all ready decode steps, reads the final text,
+  then discards the stream.
+- Audio is float32 mono in `[-1, 1]` at 16 kHz throughout; `int16 -> float32`
+  conversion happens at most once (in the WAV replay tools; the live
+  microphone path already delivers float32 via `sounddevice`).
+- **GATE (hard)**: if the configured model does not load and behave as an
+  online/streaming recognizer, the backend raises `StreamingUnavailable` (when
+  `require_streaming` is set) or the load itself fails with `ModelLoadError`.
+  There is **no fallback to `sherpa_onnx.OfflineRecognizer`** anywhere in this
+  codebase.
+- `partial_interval_s` (default 0.5 s) batches new mic blocks before handing
+  them to the streaming recognizer; it does not change how much audio the
+  encoder itself needs to look ahead (that is fixed by the ONNX export).
 - **Utterance-end second pass** (config `asr.second_pass`; CLI `--second-pass`;
   env `SHENAVA_SECOND_PASS`). Live streaming greedy stays the primary path; the
   second pass runs only at **natural** endpoints (never on forced cuts), only
   for utterances of at least `second_pass_min_utterance_s` (0.5 s), and only in
   endpoint-commit mode:
-  - `off` — streaming greedy only (fully disables the pass and its hotwords);
-  - `greedy` (default) — one offline greedy re-decode of the same segment with
-    the same model/BPE vocabulary and full context (works with any backend that
-    has `transcribe`);
-  - `context` — CTC beam search over the model's own emissions with decoder-time
-    **hotword biasing** built from the reviewed terminology rules (no second
-    dictionary; biases are small log-prob prefixes capped at 1.5 by category —
-    the list is bounded to `hotword_max` phrases, restricted to a specialty
-    with `--hotword-specialty` / `SHENAVA_HOTWORD_SPECIALTY`; units are never
-    boosted, and categories without a default boost, such as anatomy, join
-    only through an explicit reviewed `bias` on the rule). Requires the NeMo
-    backend's emissions/tokenizer capability — a missing capability is a
-    startup error, and a decode failure keeps the streaming text, counts a
-    fallback, and never switches modes silently.
+  - `off` — streaming greedy only;
+  - `greedy` (default) — one offline greedy re-decode of the same segment
+    audio via the same recognizer (`backend.transcribe()`), full context, no
+    bias.
+  - `context` (CTC beam search + reviewed-terminology hotword biasing) **is
+    not available on this backend and is rejected at startup.** It needed raw
+    per-frame emission logits and the model's own BPE tokenizer object — both
+    NeMo-specific internals that sherpa-onnx's public Python API does not
+    expose (only decoded text). `ASRConfig(second_pass="context")` raises
+    `ValueError` naming `greedy`/`off` as the supported alternatives.
   A second-pass result that differs from the streaming text replaces the
   unemitted final delta and adds the structured review reason
   `decoder_disagreement`. Statistics: `engine.get_statistics()["second_pass"]`
-  and `second_pass_stats` (`runs`/`rewrites`/`fallbacks`). In endpoint-only
-  mode the single offline decode *is* the full-context pass, so the second
-  pass is skipped (the decoder retains no separate streaming audio).
+  and `second_pass_stats` (`runs`/`rewrites`/`fallbacks`).
 - Default VAD: onset RMS .015, offset .008, 250 ms onset confirmation, 700 ms
   endpoint silence, 320 ms pre-roll, 20 s maximum segment. Tune RMS thresholds
   to your microphone's gain/noise; this detector is not speech classification.
@@ -253,17 +240,23 @@ python main.py --config config.json
 Precedence: defaults → JSON → `.env`/exported environment → CLI. Exported values
 win over `.env`. Useful environment variables:
 
-`SHENAVA_MODEL_PATH`, `SHENAVA_MODEL_NAME`, `SHENAVA_DEVICE`,
-`SHENAVA_NUM_THREADS`, `SHENAVA_RIGHT_CONTEXT`, `SHENAVA_PARTIAL_INTERVAL_S`,
-`SHENAVA_REQUIRE_STREAMING`, `SHENAVA_ALLOW_DOWNLOAD`, `SHENAVA_AUDIO_DEVICE`,
-`SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`, `SHENAVA_LOG_LEVEL`,
-`SHENAVA_SECOND_PASS` (`off|greedy|context`), `SHENAVA_HOTWORD_SPECIALTY`,
-`SHENAVA_HOTWORD_MAX`, `SHENAVA_HOTWORD_ALIASES`, `SHENAVA_HOTWORD_PHONETIC`,
-`SHENAVA_BEAM_SIZE`, `SHENAVA_VAD_ADAPTIVE`, `SHENAVA_BENCHMARK_MODE`,
-`SHENAVA_CUDA_GRAPH_STREAMING`.
+`SHENAVA_ASR_BACKEND` (unprefixed `ASR_BACKEND` also accepted; only
+`sherpa_onnx_ctc` is supported), `SHENAVA_MODEL_PATH`, `SHENAVA_TOKENS_PATH`,
+`SHENAVA_DEVICE` (`cpu` only), `SHENAVA_NUM_THREADS`, `SHENAVA_SAMPLE_RATE`
+(`16000` only), `SHENAVA_FEATURE_DIM` (default `80`, validated against the
+loaded model), `SHENAVA_DECODING_METHOD` (`greedy_search` only),
+`SHENAVA_PARTIAL_INTERVAL_S`, `SHENAVA_REQUIRE_STREAMING`,
+`SHENAVA_AUDIO_DEVICE`, `SHENAVA_OUTPUT_MODE`, `SHENAVA_INJECTOR_MODE`,
+`SHENAVA_LOG_LEVEL`, `SHENAVA_SECOND_PASS` (`off|greedy`),
+`SHENAVA_VAD_ADAPTIVE`, `SHENAVA_BENCHMARK_MODE`.
 
-`SHENAVA_DECODER` accepts `ctc` (default), `rnnt` or `auto` (explicitly the
-default head, CTC). Invalid numeric ranges are rejected.
+**Removed in this migration** (each raises a clear `ValueError` naming its
+replacement if set): `SHENAVA_RIGHT_CONTEXT`, `SHENAVA_MODEL_NAME`,
+`SHENAVA_ALLOW_DOWNLOAD`, `SHENAVA_DECODER`, `SHENAVA_BEAM_SIZE`,
+`SHENAVA_HOTWORD_ALIASES`, `SHENAVA_HOTWORD_PHONETIC`,
+`SHENAVA_CUDA_GRAPH_STREAMING`. Pointing `SHENAVA_MODEL_PATH` at a legacy
+`.nemo` file also raises a clear migration error naming `SHENAVA_MODEL_PATH`
+(`.onnx`) and `SHENAVA_TOKENS_PATH` instead.
 
 ### Adaptive VAD
 
@@ -288,11 +281,11 @@ medical injection — startup **refuses** that mode when injection or
 warning. Conflicting rewritten tails are suppressed, not re-injected.
 
 Compatibility: callbacks still accept `(text, confidence)` and decode results
-retain their second numeric slot, but the production backend always supplies
-**0.0 = unknown**. There is no calibrated confidence estimator or display.
-`confidence_threshold`, `show_confidence`, `left_context_s`, `max_window_s` are
-legacy config fields with no runtime effect. Heuristic confidence functions and
-the unsafe window decoder were removed. Consecutive-word deletion and injector
+retain their second numeric slot, but the backend always supplies **0.0 =
+unknown**. There is no calibrated confidence estimator or display.
+`confidence_threshold`, `show_confidence` are legacy config fields with no
+runtime effect. Heuristic confidence functions and the unsafe window decoder
+were removed (see `docs/REVIEW.md`). Consecutive-word deletion and injector
 text-equality deduplication are disabled by default: legitimate repetitions must
 not be deleted. The FST/stabilizer handle ASR output deterministically instead.
 
@@ -385,7 +378,7 @@ suggested fragment is printed for review only and is **never** written into
 ## Optional clinical extraction / persistence
 
 ```bash
-python main.py --model /models/shenava-koochik-v1.5.nemo \
+python main.py --model models/shenava/model.int8.onnx --tokens models/shenava/tokens.txt \
   --clinical-sqlite clinical.sqlite --clinical-jsonl clinical.jsonl
 ```
 
@@ -414,7 +407,8 @@ Routine logs record lengths/timing, not transcript contents, and `app.log` rotat
 SQLite/JSONL are plaintext; use restricted permissions, encrypted storage,
 retention/deletion policies and consent. Files grow on disk until you archive or
 delete them; there is no hidden retention service. Runtime/model files are ignored
-by Git. Third-party NeMo logs should also be audited before handling patient data.
+by Git. Third-party sherpa-onnx/ONNX Runtime logs should also be audited
+before handling patient data.
 
 ## Verification and deployment gate
 
@@ -422,8 +416,9 @@ by Git. Third-party NeMo logs should also be audited before handling patient dat
 pytest -q
 python main.py --self-test
 python tools/evaluate_medical.py tests/corpus/medical_regression.jsonl
-python tools/verify_pipeline.py --model /models/shenava-koochik-v1.5.nemo \
-  --wav /data/consented-persian-sample.wav --device cpu --right-context 13
+python tools/verify_pipeline.py \
+  --model models/shenava/model.int8.onnx --tokens models/shenava/tokens.txt \
+  --wav /data/consented-persian-sample.wav --device cpu
 ```
 
 `evaluate_medical.py` reports raw-ASR and post-processing WER/CER separately,
@@ -440,19 +435,24 @@ presented as clinical accuracy or generalized improvement. Use a versioned,
 consented domain corpus for deployment decisions.
 
 Replay requires PCM16, mono, 16 kHz WAV and runs at microphone speed. It uses the
-real backend unless `--self-test` is explicitly supplied. Native streaming is
+real backend unless `--self-test` is explicitly supplied. Streaming is
 required unless `--allow-endpoint` is passed. Output reports errors, overruns,
 text and extracted JSON. `tools/profile_asr.py --streaming` can measure model
 costs on synthetic noise, but is not an accuracy benchmark.
 
-**Verification in this checkout:** the lightweight suite and synthetic headless
-startup/replay pass; native-cache tests use a tensor/model double. Real NeMo
-checkpoint compatibility, microphone/desktop behavior, Persian WER and CPU/GPU
-latency have **not** been verified here: weights and NeMo are absent, and the CPU
-PyTorch download attempt failed with a TLS/network error. Do not treat passing
-synthetic tests as production model certification. Before deployment, run real
-WAV/microphone tests on your hardware, test all chosen contexts and smaller
-checkpoints, confirm no overruns, and review representative medical dictations.
+**Verification in this checkout:** the full pytest suite passes without the
+model (mock `sherpa_onnx` recognizer, see `tests/fake_sherpa_onnx.py`), and
+`python main.py --self-test` passes (synthetic backend). Real model
+compatibility, microphone/desktop behavior, Persian WER/CER parity against the
+retired NeMo backend, and CPU RTF at 1/2/4 threads have **not** been verified
+in this checkout: `model.int8.onnx` (132 MB) could not be downloaded in the
+migration sandbox (network egress to huggingface.co's LFS/CDN endpoints was
+blocked; `tokens.txt` alone was retrievable and its checksum recorded in
+`models/shenava/README.md`). Do not treat the passing mock-based test suite as
+production model certification. Before deployment: provision the real model
+per `models/shenava/README.md`, run `tools/verify_pipeline.py` against a real
+WAV, run `tools/evaluate_audio.py` on a consented Persian corpus, confirm no
+overruns, and review representative medical dictations.
 
 See [the inspection and change notes](docs/REVIEW.md) for the original defects
 and remaining limitations.

@@ -1,8 +1,8 @@
 """Shenava real-time Persian speech recognition.
 
-Heavy dependencies (torch, NeMo, sounddevice, pynput, tkinter) are imported
+Heavy dependencies (sherpa-onnx, sounddevice, pynput, tkinter) are imported
 lazily so configuration, the text pipeline and the test-suite work in a minimal
-environment.
+environment. There is no torch/NeMo/CUDA dependency anywhere in this package.
 """
 
 from __future__ import annotations

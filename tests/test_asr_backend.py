@@ -1,246 +1,298 @@
-"""Pure helpers of the ASR backend (no torch, no checkpoint)."""
+"""Sherpa-ONNX ASR backend: explicit errors, single recognizer, stream lifecycle.
 
+Uses a mock ``sherpa_onnx`` module (``tests/fake_sherpa_onnx.py``) so these
+tests need neither the 132 MB model nor ONNX Runtime. A real-model smoke test
+lives in ``test_asr_backend_smoke.py`` and is skipped unless the files exist.
+"""
+from __future__ import annotations
+
+import sys
 import types
-from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
-from shenava_realtime.asr_backend import NeMoASR
+from shenava_realtime.asr_backend import ModelLoadError, SherpaOnnxASR, StreamingUnavailable
 from shenava_realtime.config import ASRConfig
+from tests.fake_sherpa_onnx import FakeOnlineRecognizer
 
 
-def test_extract_handles_ne_mo_shapes():
-    extract = NeMoASR._extract
-
-    assert extract(None) == ("", 0.0)
-    assert extract([]) == ("", 0.0)
-    assert extract("متن ساده")[0] == "متن ساده"
-    assert extract(["متن ساده"])[0] == "متن ساده"
-    assert extract({"text": "متن", "score": 0.5}) == ("متن", 0.0)
-
-    hypothesis = SimpleNamespace(text="  بیمار آمد  ", score=-0.2)
-    text, confidence = extract([hypothesis])
-    assert text == "بیمار آمد"
-    assert confidence == 0.0
-
-    # A non-numeric score must not raise.
-    odd = SimpleNamespace(text="بیمار", score="n/a")
-    text, confidence = extract([odd])
-    assert text == "بیمار"
-    assert confidence == 0.0
+@pytest.fixture(autouse=True)
+def fake_sherpa_onnx_module(monkeypatch):
+    """Inject a fake ``sherpa_onnx`` module before the backend imports it."""
+    FakeOnlineRecognizer.last_kwargs = {}
+    FakeOnlineRecognizer.fail_init = False
+    FakeOnlineRecognizer.streams_created = 0
+    module = types.ModuleType("sherpa_onnx")
+    module.OnlineRecognizer = FakeOnlineRecognizer
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", module)
+    yield
+    monkeypatch.delitem(sys.modules, "sherpa_onnx", raising=False)
 
 
-def test_device_resolution_defaults_to_cpu_without_cuda(monkeypatch):
-    backend = NeMoASR(ASRConfig(device="auto"))
-    monkeypatch.setattr(
-        backend,
-        "_import_torch",
-        lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
-    )
-    assert backend.resolve_device() == "cpu"
+@pytest.fixture()
+def model_files(tmp_path):
+    model = tmp_path / "model.int8.onnx"
+    tokens = tmp_path / "tokens.txt"
+    model.write_bytes(b"not a real onnx file")
+    tokens.write_text("<blk> 0\na 1\n", encoding="utf-8")
+    return model, tokens
 
 
-def test_device_resolution_honours_an_explicit_cpu(monkeypatch):
-    backend = NeMoASR(ASRConfig(device="cpu"))
-    monkeypatch.setattr(
-        backend,
-        "_import_torch",
-        lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)),
-    )
-    assert backend.resolve_device() == "cpu"
+def make_backend(model_files, **overrides) -> SherpaOnnxASR:
+    model, tokens = model_files
+    config = ASRConfig(model_path=str(model), tokens_path=str(tokens), **overrides)
+    return SherpaOnnxASR(config)
 
 
-def test_cuda_request_falls_back_when_unavailable(monkeypatch):
-    backend = NeMoASR(ASRConfig(device="cuda"))
-    monkeypatch.setattr(
-        backend,
-        "_import_torch",
-        lambda: SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
-    )
-    assert backend.resolve_device() == "cpu"
+# --------------------------------------------------------------------------- #
+# Explicit startup errors, no fallback
+# --------------------------------------------------------------------------- #
+def test_missing_model_file_is_a_clear_error(tmp_path):
+    tokens = tmp_path / "tokens.txt"
+    tokens.write_text("<blk> 0\n", encoding="utf-8")
+    backend = SherpaOnnxASR(ASRConfig(model_path=str(tmp_path / "missing.onnx"), tokens_path=str(tokens)))
+    with pytest.raises(ModelLoadError, match="not found"):
+        backend.load()
 
 
-def test_transcribe_of_empty_audio_short_circuits():
-    backend = NeMoASR(ASRConfig())
-    backend._model = object()  # pretend it is loaded; the call must not reach it
-    import numpy as np
-
-    assert backend.transcribe(np.zeros(0, dtype=np.float32)) == ("", 0.0)
-
-
-def test_relative_checkpoint_paths_resolve_against_the_repo(tmp_path, monkeypatch):
-    import shenava_realtime.asr_backend as module
-
-    checkpoint = tmp_path / "shenava.nemo"
-    checkpoint.write_bytes(b"not really a model")
-    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
-
-    backend = NeMoASR(ASRConfig(model_path="shenava.nemo"))
-    assert backend.resolve_checkpoint_path() == checkpoint
-
-    backend = NeMoASR(ASRConfig(model_path=str(checkpoint)))
-    assert backend.resolve_checkpoint_path() == checkpoint
-
-    backend = NeMoASR(ASRConfig(model_path="missing.nemo"))
-    assert backend.resolve_checkpoint_path() is None
-
-    backend = NeMoASR(ASRConfig(model_path=None))
-    assert backend.resolve_checkpoint_path() is None
+def test_missing_tokens_file_is_a_clear_error(tmp_path):
+    model = tmp_path / "model.int8.onnx"
+    model.write_bytes(b"x")
+    backend = SherpaOnnxASR(ASRConfig(model_path=str(model), tokens_path=str(tmp_path / "missing.txt")))
+    with pytest.raises(ModelLoadError, match="tokens"):
+        backend.load()
 
 
-def test_missing_checkpoint_does_not_import_torch_or_download(monkeypatch):
-    backend = NeMoASR(ASRConfig(model_path="/missing/checkpoint.nemo"))
-    monkeypatch.setattr(backend, "_import_torch", lambda: pytest.fail("must fail before importing torch"))
-    with pytest.raises(FileNotFoundError, match="Local Shenava"):
+def test_wrong_model_extension_is_rejected(tmp_path):
+    model = tmp_path / "model.bin"
+    tokens = tmp_path / "tokens.txt"
+    model.write_bytes(b"x")
+    tokens.write_text("<blk> 0\n", encoding="utf-8")
+    backend = SherpaOnnxASR(ASRConfig(model_path=str(model), tokens_path=str(tokens)))
+    with pytest.raises(ModelLoadError, match=r"\.onnx"):
+        backend.load()
+
+
+def test_legacy_nemo_path_is_rejected_with_a_migration_message(tmp_path):
+    model = tmp_path / "shenava-koochik-v1.5.nemo"
+    tokens = tmp_path / "tokens.txt"
+    model.write_bytes(b"x")
+    tokens.write_text("<blk> 0\n", encoding="utf-8")
+    backend = SherpaOnnxASR(ASRConfig(model_path=str(model), tokens_path=str(tokens)))
+    with pytest.raises(ModelLoadError, match="legacy NeMo checkpoint"):
+        backend.load()
+
+
+def test_wrong_tokens_extension_is_rejected(model_files, tmp_path):
+    model, _ = model_files
+    bogus_tokens = tmp_path / "tokens.json"
+    bogus_tokens.write_text("{}", encoding="utf-8")
+    backend = SherpaOnnxASR(ASRConfig(model_path=str(model), tokens_path=str(bogus_tokens)))
+    with pytest.raises(ModelLoadError, match=r"\.txt"):
+        backend.load()
+
+
+def test_sherpa_onnx_not_importable_is_explicit(model_files, monkeypatch):
+    monkeypatch.delitem(sys.modules, "sherpa_onnx", raising=False)
+    import builtins
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "sherpa_onnx":
+            raise ImportError("no module named sherpa_onnx")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    backend = make_backend(model_files)
+    with pytest.raises(ModelLoadError, match="sherpa-onnx is required"):
+        backend.load()
+
+
+def test_wrong_sample_rate_is_rejected_before_loading(model_files):
+    backend = make_backend(model_files)
+    backend.config.sample_rate = 8000
+    with pytest.raises(Exception):  # ASRConfig.__post_init__ raises ValueError
+        backend.load()
+
+
+def test_recognizer_init_failure_is_wrapped(model_files):
+    FakeOnlineRecognizer.fail_init = True
+    backend = make_backend(model_files)
+    with pytest.raises(ModelLoadError, match="failed to initialise"):
+        backend.load()
+
+
+def test_missing_model_path_configured_is_explicit():
+    backend = SherpaOnnxASR(ASRConfig(model_path=None, tokens_path=None))
+    with pytest.raises(ModelLoadError, match="not configured"):
         backend.load()
 
 
 # --------------------------------------------------------------------------- #
-# Capability probing: heads, streaming contexts, blanks — probed, not assumed.
+# Correct construction: CPU provider, threads, sample rate, feature dim,
+# greedy decoding, sherpa's own endpointer disabled (single endpointer: VAD).
 # --------------------------------------------------------------------------- #
-from shenava_realtime.asr_backend import CapabilityUnavailable, ModelCapabilities
+def test_load_passes_cpu_provider_and_config_through(model_files):
+    backend = make_backend(model_files, num_threads=2, feature_dim=80)
+    backend.load()
+    kwargs = FakeOnlineRecognizer.last_kwargs
+    assert kwargs["provider"] == "cpu"
+    assert kwargs["num_threads"] == 2
+    assert kwargs["sample_rate"] == 16000
+    assert kwargs["feature_dim"] == 80
+    assert kwargs["decoding_method"] == "greedy_search"
+    # Exactly one endpointer: the existing RMS VAD, never sherpa's own.
+    assert kwargs["enable_endpoint_detection"] is False
 
 
-class _Tokenizer:
-    def encode(self, text):
-        return [1, 2, 3]
-
-    def decode(self, ids):
-        return " ".join(str(i) for i in ids)
-
-    def get_vocab(self):
-        return {f"t{i}": i for i in range(128)}
+def test_load_is_idempotent_single_recognizer_instance(model_files):
+    backend = make_backend(model_files)
+    backend.load()
+    first = backend.recognizer
+    backend.load()
+    assert backend.recognizer is first
 
 
-def _model(contexts=None, native=True, *, ctc=True, rnnt=False,
-           sample_rate=16000, tokenizer=True):
-    encoder = types.SimpleNamespace(att_context_size_all=contexts)
-    model = types.SimpleNamespace(
-        encoder=encoder,
-        cfg=SimpleNamespace(preprocessor=SimpleNamespace(sample_rate=sample_rate)),
-    )
-    if native:
-        model.conformer_stream_step = lambda **kwargs: None
-    if ctc:
-        model.ctc_decoder = SimpleNamespace(blank_index=0)
-    if rnnt:
-        model.joint = SimpleNamespace()
-        model.decoder = SimpleNamespace()
-        model.decoding = SimpleNamespace(blank_id=127)
-    if tokenizer:
-        model.tokenizer = _Tokenizer()
-    return model
+def test_capabilities_report_streaming_cpu_int8(model_files):
+    backend = make_backend(model_files)
+    caps = backend.capabilities()
+    assert caps.streaming is True
+    assert caps.provider == "cpu"
+    assert "streaming=yes" in caps.describe()
 
 
-def _probe(model, **config_kwargs):
-    return NeMoASR(ASRConfig(**config_kwargs))._probe_capabilities(model)
-
-
-CONTEXTS = [[70, 13], [70, 6], [70, 1], [70, 0]]
-
-
-def test_supported_contexts_enable_streaming():
-    capabilities = _probe(_model(CONTEXTS))
-    assert capabilities.supports_cache_aware_streaming is True
-    assert capabilities.streaming_contexts == ((70, 13), (70, 6), (70, 1), (70, 0))
-    for right in (0, 1, 6, 13):
-        NeMoASR(ASRConfig(right_context=right))._validate_startup(capabilities, "ctc")
-
-
-def test_unsupported_right_context_fails_at_startup():
-    """Regression: [70, 13] on a [70, 0]-only encoder degraded to endpoint-only."""
-    capabilities = _probe(_model([[70, 0]]))
-    backend = NeMoASR(ASRConfig(right_context=13))
-    with pytest.raises(CapabilityUnavailable, match="right_context=13"):
-        backend._validate_startup(capabilities, "ctc")
-
-
-def test_offline_checkpoint_keeps_the_documented_endpoint_fallback():
-    capabilities = _probe(_model(CONTEXTS, native=False))
-    assert capabilities.supports_cache_aware_streaming is False
-    # Endpoint-only is allowed unless streaming was explicitly required.
-    NeMoASR(ASRConfig(right_context=13))._validate_startup(capabilities, "ctc")
-    with pytest.raises(CapabilityUnavailable, match="require_streaming"):
-        NeMoASR(ASRConfig(require_streaming=True))._validate_startup(capabilities, "ctc")
-
-
-def test_missing_context_metadata_never_enables_streaming():
-    assert _probe(_model(None)).supports_cache_aware_streaming is False
-
-
-def test_capabilities_report_both_heads_of_a_hybrid_checkpoint():
-    capabilities = _probe(_model(CONTEXTS, rnnt=True))
-    assert capabilities.heads() == ("ctc", "rnnt")
-    assert capabilities.rnnt_blank_index == 127
-    assert capabilities.ctc_blank_index == 0
-    assert capabilities.vocab_size == 128
-    assert "heads=ctc,rnnt" in capabilities.describe()
-
-
-def test_rnnt_request_fails_clearly_on_a_ctc_only_checkpoint():
-    capabilities = _probe(_model(CONTEXTS, rnnt=False))
-    assert capabilities.has_rnnt_head is False
-    with pytest.raises(CapabilityUnavailable, match="no\\s+RNNT"):
-        NeMoASR(ASRConfig(decoder_type="rnnt"))._validate_startup(capabilities, "rnnt")
-
-
-def test_rnnt_requires_a_resolvable_blank_id():
-    model = _model(CONTEXTS, rnnt=True)
-    model.decoding = SimpleNamespace()
-    model.joint = SimpleNamespace()
-    model.decoder = SimpleNamespace()
-    capabilities = _probe(model)
-    with pytest.raises(CapabilityUnavailable, match="blank"):
-        NeMoASR(ASRConfig(decoder_type="rnnt"))._validate_startup(capabilities, "rnnt")
-
-
-def test_non_16k_frontend_fails_at_startup():
-    capabilities = _probe(_model(CONTEXTS, sample_rate=8000))
-    with pytest.raises(CapabilityUnavailable, match="16 kHz"):
-        NeMoASR(ASRConfig())._validate_startup(capabilities, "ctc")
-
-
-def test_head_selection_uses_the_models_own_api():
-    calls = []
-    model = _model(CONTEXTS, rnnt=True)
-    model.change_decoding_strategy = lambda cfg, decoder_type=None: calls.append(decoder_type)
-    NeMoASR(ASRConfig())._select_head(model, "rnnt")
-    assert calls == ["rnnt"]
-
-
-def test_head_selection_fails_when_the_checkpoint_cannot_switch_heads():
-    model = _model(CONTEXTS)
-
-    def only_ctc(cfg):  # no decoder_type keyword: single-head checkpoint
-        return None
-
-    model.change_decoding_strategy = only_ctc
-    NeMoASR(ASRConfig())._select_head(model, "ctc")  # allowed
-    with pytest.raises(CapabilityUnavailable, match="decoder_type"):
-        NeMoASR(ASRConfig())._select_head(model, "rnnt")
+def test_require_streaming_gate_has_no_fallback(model_files, monkeypatch):
+    backend = make_backend(model_files, require_streaming=True)
+    monkeypatch.setattr(backend, "_probe_streaming", lambda recognizer: False)
+    with pytest.raises(StreamingUnavailable):
+        backend.load()
+    # No recognizer is exposed after a failed GATE check.
+    assert backend._recognizer is None
 
 
 # --------------------------------------------------------------------------- #
-# CUDA-graph streaming: optional optimisation, eager is the reference path
+# Stream lifecycle: one long-lived recognizer, one stream per segment
 # --------------------------------------------------------------------------- #
-def test_cuda_graph_streaming_is_off_by_default_and_touches_nothing():
-    model = _model(CONTEXTS, rnnt=True)
-    model.decoding = SimpleNamespace(blank_id=1, decoding=SimpleNamespace())
-    NeMoASR(ASRConfig())._apply_cuda_graph_option(model)
-    assert not hasattr(model.decoding.decoding, "use_cuda_graph_decoder")
+def test_transcribe_of_empty_audio_short_circuits(model_files):
+    backend = make_backend(model_files)
+    assert backend.transcribe(np.zeros(0, dtype=np.float32)) == ("", 0.0)
 
 
-def test_cuda_graph_streaming_is_applied_when_requested_and_supported():
-    model = _model(CONTEXTS, rnnt=True)
-    model.decoding = SimpleNamespace(
-        blank_id=1, decoding=SimpleNamespace(use_cuda_graph_decoder=False)
-    )
-    NeMoASR(ASRConfig(cuda_graph_streaming=True))._apply_cuda_graph_option(model)
-    assert model.decoding.decoding.use_cuda_graph_decoder is True
+def test_create_stream_reuses_the_single_recognizer(model_files):
+    backend = make_backend(model_files)
+    backend.load()
+    before = FakeOnlineRecognizer.streams_created
+    stream_a = backend.create_stream()
+    stream_b = backend.create_stream()
+    assert stream_a._recognizer is stream_b._recognizer
+    # Exactly one recognizer is ever constructed (see test_load_is_idempotent);
+    # only streams are created per call.
+    assert FakeOnlineRecognizer.streams_created == before + 2
 
 
-def test_requesting_cuda_graph_streaming_without_support_fails_explicitly():
-    model = _model(CONTEXTS, rnnt=True)
-    model.decoding = SimpleNamespace(blank_id=1, decoding=SimpleNamespace())
-    with pytest.raises(CapabilityUnavailable, match="use_cuda_graph_decoder"):
-        NeMoASR(ASRConfig(cuda_graph_streaming=True))._apply_cuda_graph_option(model)
+def test_incremental_chunk_feeding_accumulates_without_whole_buffer_copies(model_files):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    # 4 chunks of 400ms (1600 samples each at 16kHz) -> 4 decode steps.
+    chunk = np.zeros(1600, dtype=np.float32)
+    for _ in range(4):
+        stream.accept(chunk)
+        stream.decode_ready()
+    assert stream.partial() == "tok0 tok1 tok2 tok3"
+
+
+def test_partial_is_cumulative_and_grows_monotonically(model_files):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    chunk = np.zeros(1600, dtype=np.float32)
+    seen = []
+    for _ in range(3):
+        stream.push(chunk)
+        seen.append(stream.partial())
+    assert seen == ["tok0", "tok0 tok1", "tok0 tok1 tok2"]
+
+
+def test_finalize_pads_the_tail_and_calls_input_finished(model_files):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    stream.accept(np.zeros(1600, dtype=np.float32))
+    stream.decode_ready()
+    text, confidence = stream.finalize()
+    assert confidence == 0.0
+    assert stream._stream.finished is True
+    # Tail padding (0.5s = 8000 samples) plus the 1600 already fed = 9600.
+    assert len(stream._stream.samples) == 1600 + 8000
+
+
+def test_finalized_stream_cannot_be_reused(model_files):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    stream.finalize()
+    with pytest.raises(RuntimeError, match="finalized"):
+        stream.accept(np.zeros(100, dtype=np.float32))
+
+
+def test_new_stream_per_segment_has_no_state_bleed(model_files):
+    """Each VAD segment gets a fresh stream; a loud first segment must not
+    influence the token count of a completely separate second segment."""
+    backend = make_backend(model_files)
+    stream1 = backend.create_stream()
+    for _ in range(5):
+        stream1.push(np.zeros(1600, dtype=np.float32))
+    text1, _ = stream1.finalize()
+    assert text1  # first segment produced tokens
+
+    stream2 = backend.create_stream()
+    assert stream2.partial() == ""  # brand-new stream starts empty
+    stream2.push(np.zeros(1600, dtype=np.float32))
+    assert stream2.partial() == "tok0"  # not "tok6" or similar carry-over
+
+
+def test_bounded_memory_over_a_long_synthetic_stream(model_files):
+    """~10 minutes of audio fed in small chunks: the wrapper must not
+    accumulate the whole recording (only the fake stream, which we control,
+    grows; the wrapper itself holds no growing per-chunk buffers)."""
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    chunk = np.zeros(1600, dtype=np.float32)  # 100ms
+    steps = int(10 * 60 / 0.1)  # 10 minutes of 100ms chunks
+    for _ in range(steps):
+        stream.accept(chunk)
+        stream.decode_ready()
+    assert stream._stream.tokens == steps
+    stats = backend.stats()
+    assert stats["decode_count"] == steps
+    assert stats["audio_seconds"] == pytest.approx(600.0, rel=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# Stats: never transcript/audio content
+# --------------------------------------------------------------------------- #
+def test_stats_never_contain_transcript_or_audio_keys(model_files):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    stream.push(np.zeros(1600, dtype=np.float32))
+    stream.finalize()
+    stats = backend.stats()
+    assert set(stats) == {
+        "audio_seconds", "processing_seconds", "rtf", "decode_count",
+        "dropped_chunks", "overruns", "decoder_errors", "segments",
+    }
+    assert stats["segments"] == 1
+    assert stats["decode_count"] >= 1
+    assert stats["rtf"] >= 0.0
+
+
+def test_decoder_errors_are_counted(model_files, monkeypatch):
+    backend = make_backend(model_files)
+    stream = backend.create_stream()
+    stream.accept(np.zeros(1600, dtype=np.float32))
+
+    def boom(_stream):
+        raise RuntimeError("synthetic decode failure")
+
+    monkeypatch.setattr(stream._recognizer, "decode_stream", boom)
+    with pytest.raises(RuntimeError):
+        stream.decode_ready()
+    assert backend.stats()["decoder_errors"] == 1
