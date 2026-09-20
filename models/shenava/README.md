@@ -1,79 +1,122 @@
-# Shenava-Koochik-v1.0 — sherpa-onnx streaming CTC model
+---
+language:
+- fa
+license: cc-by-nc-4.0
+library_name: sherpa-onnx
+pipeline_tag: automatic-speech-recognition
+base_model:
+- Reza2kn/Shenava-Koochik-v1.0
+base_model_relation: finetune
+tags:
+- automatic-speech-recognition
+- speech
+- persian
+- farsi
+- fastconformer
+- ctc
+- streaming
+- on-device
+- shenava
+- shenava-1
+- onnx
+- sherpa-onnx
+- int8
+- quantized
+metrics:
+- wer
+- cer
+datasets:
+- Reza2kn/visualears-persian-asr-16k
+- Reza2kn/visualears-golden-6669
+- Reza2kn/fleurs-fa-benchmark
+model-index:
+- name: sherpa-onnx-shenava-koochik-v1.0-ctc-int8
+  results:
+  - task:
+      type: automatic-speech-recognition
+      name: Automatic Speech Recognition
+    dataset:
+      name: golden-6669
+      type: Reza2kn/visualears-golden-6669
+      split: test
+    metrics:
+      - type: wer
+        value: 7.90
+        name: WER
+      - type: cer
+        value: 2.60
+        name: CER
+  - task:
+      type: automatic-speech-recognition
+      name: Automatic Speech Recognition
+    dataset:
+      name: FLEURS-fa
+      type: Reza2kn/fleurs-fa-benchmark
+      split: test
+    metrics:
+      - type: wer
+        value: 11.20
+        name: WER
+      - type: cer
+        value: 4.10
+        name: CER
+---
 
-This directory is **git-ignored**: the model is provisioned locally, never
-downloaded automatically by the application. Provision it once with the
-command below before running `main.py` or the real-model tests/tools.
+# Shenava — Koochik v1.0 (114M) · CTC Streaming · ONNX (INT8)
 
-## Source
+**Koochik** (کوچیک, "small") is the **114M teacher / flagship** of the **Shenava‑1** family — a FastConformer Hybrid RNNT/CTC model fine‑tuned on clean Persian data with **ve_tok_v4**. This repository contains the **CTC streaming INT8 quantized ONNX export** for use with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
 
-- **HF repo**: [`mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26`](https://huggingface.co/mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26)
-- **Pinned revision (commit sha)**: `4be3d2375c98a985154122d69b43360eb8bdca5a`
-- **Base model**: `Reza2kn/Shenava-Koochik-v1.0` (FastConformer Hybrid RNNT/CTC,
-  114M params) — this export is the CTC-only streaming head, quantized to
-  INT8 with ONNX Runtime dynamic quantization.
-- **License: CC-BY-NC 4.0** (inherited from the parent model). This is
-  **non-commercial**; verify your use case is compatible before deploying.
+The original NeMo checkpoint is at [`Reza2kn/Shenava-Koochik-v1.0`](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0).
 
-## Files (place directly in this directory)
+## Benchmark — fair WER/CER
 
-| File | Size (bytes) | sha256 |
-| --- | --- | --- |
-| `model.int8.onnx` | 132,048,387 | `439983c95ab83c55c841e0795ba3a61d56718ec5c972a3a208548b93470b04b1` |
-| `tokens.txt` | 12,236 | `8e192963f6e666dfa5721e5cbd4710bc1ef592460a45f08cefc94b2db16a6954` |
+| Variant | golden‑6669 WER | FLEURS‑fa WER |
+|---|---|---|
+| FP32 (full precision) | 7.49% | 10.64% |
+| **INT8 (quantized)** | **~7.90%** | **~11.20%** |
 
-The `sha256` values above come from the HF repo's own LFS/file metadata
-(`model.int8.onnx`) and from re-fetching `tokens.txt` byte-for-byte during
-this migration (its exact 12,236-byte content is checked into
-`tokens.txt.reference` in this directory for convenience/diffing — it is
-**not** a substitute for downloading your own copy and verifying the
-checksum below). `model.int8.onnx` could not be fetched in the migration
-sandbox (network egress to huggingface.co's LFS/CDN endpoints was blocked);
-it must be downloaded on a machine with network access using the command
-below, and its checksum verified before use.
+INT8 quantization yields ~4× model size reduction with <0.5% WER degradation.
 
-## Download (manual only — no automatic downloads anywhere in this app)
-
-```bash
-pip install -U "huggingface_hub[cli]"
-hf download mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26 \
-  --revision 4be3d2375c98a985154122d69b43360eb8bdca5a \
-  --local-dir models/shenava
-```
-
-Then verify the checksums:
-
-```bash
-sha256sum models/shenava/model.int8.onnx models/shenava/tokens.txt
-# compare against the table above
-```
-
-## Model properties (from the HF model card)
+## Model Details
 
 | Property | Value |
-| --- | --- |
-| Architecture | FastConformer Hybrid RNNT/CTC → CTC decoder export |
-| Language | Persian (Farsi) |
-| Parameters | 114M |
-| Vocabulary size | 1025 tokens (BPE + blank) |
-| Sample rate | 16 kHz |
-| Subsampling | 8x |
-| Streaming | Yes (cache-aware CTC export) |
-| Weight type | INT8 (dynamic quantization) |
+|---|---|
+| **Parent Model** | [`Reza2kn/Shenava-Koochik-v1.0`](https://huggingface.co/Reza2kn/Shenava-Koochik-v1.0) |
+| **Architecture** | FastConformer Hybrid RNNT/CTC → CTC decoder export |
+| **Language** | Persian (Farsi) |
+| **Parameters** | 114M |
+| **Vocabulary Size** | 1025 tokens (BPE + blank) |
+| **Tokenizer** | ve_tok_v4 — SentencePiece BPE‑1024 |
+| **Sample Rate** | 16 kHz |
+| **Subsampling** | 8× |
+| **Streaming** | ✅ Yes (with cache support) |
+| **Weight Type** | INT8 (dynamic quantization) |
+| **Author** | [Reza2kn](https://github.com/Reza2kn) |
+| **Version** | 1.0 |
 
-Reported benchmark (from the model card, not independently re-verified in
-this repository): WER 7.90% / CER 2.60% on `golden-6669`; WER 11.20% / CER
-4.10% on `FLEURS-fa`.
-
-## Configuration
-
-Point `shenava_realtime` at these files via `.env` or environment variables
-(see `../../.env.example`):
+## Files
 
 ```
-SHENAVA_MODEL_PATH=./models/shenava/model.int8.onnx
-SHENAVA_TOKENS_PATH=./models/shenava/tokens.txt
+.
+├── README.md
+├── model.int8.onnx   # ONNX model (INT8 quantized)
+└── tokens.txt        # Token vocabulary (1025 tokens)
 ```
 
-`SHENAVA_FEATURE_DIM` defaults to `80` (NeMo FastConformer's standard mel-bin
-count); `main.py`/the backend validate this against the loaded ONNX model at
-startup and fail clearly on a mismatch — see `shenava_realtime/asr_backend.py`.
+## Usage
+
+```bash
+sherpa-onnx-offline \
+  --tokens=tokens.txt \
+  --encoder=model.int8.onnx \
+  --num-threads=4 \
+  /path/to/test.wav
+```
+
+## Conversion
+
+Exported from a NeMo checkpoint and quantized dynamically with ONNX Runtime.
+
+## License
+
+CC-BY-NC 4.0 (inherited from the parent model)
