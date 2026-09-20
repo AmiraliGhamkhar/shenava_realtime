@@ -34,6 +34,7 @@ def make_engine(**asr_overrides):
     config = AppConfig()
     config.audio.queue_max_chunks = 128
     config.save_transcripts = False
+    config.asr.require_streaming = False
     for key, value in asr_overrides.items():
         setattr(config.asr, key, value)
     config.asr.__post_init__()
@@ -141,6 +142,7 @@ def test_a_decoder_failure_is_counted_and_aborts_only_that_utterance():
     config = AppConfig()
     config.audio.queue_max_chunks = 128
     config.save_transcripts = False
+    config.asr.require_streaming = False
     capture = FakeAudioCapture()
     engine = RealtimeASR(
         config, backend=FakeBackend(RecordingTranscriber(explode)), audio_capture=capture

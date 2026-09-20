@@ -17,7 +17,8 @@ import logging
 import queue
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 import numpy as np
 
@@ -37,6 +38,12 @@ logger = logging.getLogger(__name__)
 _CLEAR = object()
 _PAUSE = object()
 
+# Microphone-level diagnostics are observation only.  They make it obvious when
+# PortAudio is delivering frames but the selected input is effectively silent;
+# they never change samples or VAD thresholds.
+_MIC_LEVEL_WINDOW_S = 2.0
+_MIC_LOW_LEVEL_FRACTION = 0.25
+
 
 class AudioCapture:
     """Captures microphone audio and segments it into utterances."""
@@ -52,6 +59,12 @@ class AudioCapture:
                 min_silence_ms=self.config.vad_min_silence_ms,
                 pre_speech_ms=self.config.vad_pre_speech_ms,
                 max_speech_s=self.config.vad_max_speech_s,
+                adaptive=self.config.vad_adaptive,
+                noise_init_ms=self.config.vad_noise_init_ms,
+                noise_halflife_ms=self.config.vad_noise_halflife_ms,
+                onset_snr=self.config.vad_onset_snr,
+                offset_snr=self.config.vad_offset_snr,
+                adaptive_max_gain=self.config.vad_adaptive_max_gain,
             )
         )
 
@@ -77,6 +90,14 @@ class AudioCapture:
         self._dropout_reported = False
         self._last_block_time = 0.0
         self.last_error: Optional[str] = None
+
+        # Rolling microphone levels (consumer thread only).  Used only for
+        # startup diagnostics: frames-arriving-but-silent is a different
+        # failure mode from a stalled/disconnected input device.
+        self._level_window: Deque[tuple[float, float, int]] = deque()
+        self._level_window_samples = 0
+        self._mic_level_reported = False
+        self._low_level_reported = False
 
         self.stats: Dict[str, float] = {
             "chunks": 0,
@@ -122,6 +143,7 @@ class AudioCapture:
             self._paused = False
             self._stopping = False
             self._dropout_reported = False
+            self._reset_level_diagnostics()
             self.last_error = None
             with self._lock:
                 self._last_block_time = time.monotonic()
@@ -290,6 +312,68 @@ class AudioCapture:
             self._dropout_reported = False
             logger.warning("microphone blocks resumed after a capture dropout")
 
+    def _reset_level_diagnostics(self) -> None:
+        self._level_window.clear()
+        self._level_window_samples = 0
+        self._mic_level_reported = False
+        self._low_level_reported = False
+
+    def _observe_microphone_level(self, block: np.ndarray) -> None:
+        """Log microphone level once; never alter audio or VAD thresholds."""
+        samples = np.asarray(block, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return
+        rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
+        peak = float(np.max(np.abs(samples)))
+        self.stats["microphone_rms"] = rms
+        self.stats["microphone_peak"] = peak
+
+        self._level_window.append((rms, peak, int(samples.size)))
+        self._level_window_samples += int(samples.size)
+        max_samples = int(round(_MIC_LEVEL_WINDOW_S * self.config.sample_rate))
+        window_reached = self._level_window_samples >= max_samples
+        while self._level_window_samples > max_samples and len(self._level_window) > 1:
+            _old_rms, _old_peak, old_samples = self._level_window.popleft()
+            self._level_window_samples -= old_samples
+
+        onset = float(getattr(self.vad, "onset_threshold", self.config.vad_onset_rms))
+        offset = float(getattr(self.vad, "offset_threshold", self.config.vad_offset_rms))
+        low_level_rms = max(1e-4, min(onset, offset) * _MIC_LOW_LEVEL_FRACTION)
+        if not self._mic_level_reported and rms >= low_level_rms:
+            self._mic_level_reported = True
+            logger.info("microphone input detected: rms=%.4f peak=%.4f", rms, peak)
+
+        if self._low_level_reported or self.stats.get("segments", 0) > 0:
+            return
+        if self.vad.state is not VADState.SILENCE:
+            return
+        if not window_reached:
+            return
+        total_samples = sum(size for _rms, _peak, size in self._level_window)
+        if total_samples <= 0:
+            return
+        # Weighted RMS over the small window; peaks are diagnostic only.
+        mean_square = (
+            sum((rms_value ** 2) * size for rms_value, _peak, size in self._level_window)
+            / total_samples
+        )
+        window_rms = float(np.sqrt(mean_square))
+        window_peak = max(
+            (peak_value for _rms, peak_value, _size in self._level_window),
+            default=0.0,
+        )
+        if window_rms < low_level_rms:
+            self._low_level_reported = True
+            logger.warning(
+                "microphone frames are arriving but input level is very low: "
+                "rms=%.4f peak=%.4f onset_rms=%.4f offset_rms=%.4f; "
+                "check input device and microphone gain",
+                window_rms,
+                window_peak,
+                onset,
+                offset,
+            )
+
     def _check_heartbeat(self) -> None:
         """Surface a silent/disconnected input device as a visible error.
 
@@ -347,6 +431,7 @@ class AudioCapture:
                 self._queue.queue.extend(controls)
             return
         duration = block.size / float(self.config.sample_rate)
+        self._observe_microphone_level(block)
 
         # Hand the block to the streaming consumer *before* the boundary
         # events, so an utterance always has all of its audio when it ends.
@@ -375,7 +460,7 @@ class AudioCapture:
     def _dispatch(self, event: VADEvent) -> None:
         if event.type is EventType.SPEECH_START:
             self.stats["segments"] += 1
-            logger.info("speech started (%.2fs pre-roll)", event.duration_s)
+            logger.info("SPEECH_START: speech started (%.2fs pre-roll)", event.duration_s)
             if self.on_speech_start is not None:
                 try:
                     self.on_speech_start(event.audio if event.audio is not None else np.zeros(0, dtype=np.float32))
@@ -383,7 +468,7 @@ class AudioCapture:
                     logger.exception("on_speech_start callback failed")
         else:
             logger.info(
-                "speech ended (%.2fs%s)",
+                "SPEECH_END: speech ended (%.2fs%s)",
                 event.duration_s,
                 ", forced segment cut" if event.forced else "",
             )

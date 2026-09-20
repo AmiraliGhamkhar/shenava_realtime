@@ -15,6 +15,7 @@ def test_application_starts_drains_and_stops(tmp_path, monkeypatch):
     config = AppConfig()
     config.overlay.enabled = config.injector.enabled = False
     config.output_mode = OutputMode.CONSOLE
+    config.asr.require_streaming = False
     capture = FakeAudioCapture()
     original_start = capture.start
     def start():
@@ -42,6 +43,7 @@ def _config(**changes):
     config = AppConfig()
     config.overlay.enabled = False
     config.injector.enabled = False
+    config.asr.require_streaming = False
     config.asr.commit_on_endpoint = False
     for key, value in changes.items():
         setattr(config, key, value)
@@ -88,6 +90,7 @@ def test_clinical_persistence_is_opt_in(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config = AppConfig()
     config.overlay.enabled = config.injector.enabled = False
+    config.asr.require_streaming = False
     app = ShenavaApp(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
     assert app.clinical is None
     assert not list(tmp_path.glob("*.sqlite*"))

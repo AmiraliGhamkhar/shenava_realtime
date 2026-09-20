@@ -148,6 +148,7 @@ def test_asr_overrun_aborts_instead_of_continuing_cached_state():
     from tests.fakes import FakeBackend, FakeAudioCapture
     config = AppConfig()
     config.audio.queue_max_chunks = 2
+    config.asr.require_streaming = False
     engine = RealtimeASR(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
     engine.pipeline.start_utterance()
     engine._enqueue(('audio', np.zeros(1000, np.float32)))

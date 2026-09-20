@@ -1,22 +1,10 @@
-# Real recognition stack for Shenava-Koochik-v1.0 (streaming CTC, sherpa-onnx).
-#
-# The runtime backend (shenava_realtime/asr_backend.py) loads an ONNX
-# export of the model via sherpa-onnx's Python API and runs it on ONNX
-# Runtime's CPU execution provider. There is no torch/nemo_toolkit dependency
-# anywhere in the runtime path; sherpa-onnx pulls in its own bundled ONNX
-# Runtime, so nothing else is required.
-#
-# Pinned to the version this migration was verified against (see
-# docs/REVIEW.md / the Phase 0 migration report for the exact spike results).
-sherpa-onnx
+# Shenava realtime runtime dependencies.
+# sherpa-onnx 1.13.8 is the version used for the Shenava-Koochik-v1.0
+# streaming CTC migration and startup probe validation.
+sherpa-onnx==1.13.8
 numpy
-# Optional desktop extras: microphone capture, clipboard and global hotkeys.
-# Linux may also need OS packages for PortAudio, Tk and an X11 clipboard utility.
+
+# Desktop capture/output extras used by the local application.
 sounddevice
-soundfile
 pynput
 pyperclip
-# Core + test dependencies for the deterministic pipeline (no ASR model stack).
-# The lightweight suite and ``python main.py --self-test`` need only these.
-pytest
-

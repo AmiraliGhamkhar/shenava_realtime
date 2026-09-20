@@ -19,6 +19,7 @@ import logging
 import signal
 import sys
 import threading
+from importlib import import_module
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,14 @@ from shenava_realtime.realtime_engine import RealtimeASR
 from shenava_realtime.utils import PerformanceMonitor, setup_logging
 
 logger = logging.getLogger("shenava.app")
+
+
+def _sherpa_onnx_version() -> str:
+    try:
+        module = import_module("sherpa_onnx")
+    except Exception:
+        return "not available"
+    return str(getattr(module, "__version__", "unknown"))
 
 
 class ShenavaApp:
@@ -154,23 +163,47 @@ class ShenavaApp:
         self._shutdown.set()
 
     def _log_startup_diagnostics(self) -> None:
-        """One-block summary of what is actually active (no transcript content)."""
+        """One-block summary of the active runtime path (no transcript content)."""
         asr = self.config.asr
-        logger.info(
-            "backend=%s model=%s tokens=%s provider=%s threads=%d "
-            "sample_rate=%d feature_dim=%d second_pass=%s adaptive_vad=%s benchmark=%s",
-            asr.asr_backend, asr.model_path, asr.tokens_path, asr.device, asr.num_threads,
-            asr.sample_rate, asr.feature_dim, asr.second_pass,
-            self.config.audio.vad_adaptive, asr.benchmark_mode,
-        )
+        audio = self.config.audio
+        stats = self.asr.get_statistics()
+        streaming = "unknown"
         capabilities = getattr(self.asr.backend, "capabilities", None)
         if callable(capabilities):
             try:
-                logger.info("model capabilities — %s", capabilities().describe())
+                caps = capabilities()
+                streaming = "yes" if caps.streaming else "no"
+                logger.info("model capabilities — %s", caps.describe())
             except Exception as exc:  # capability reporting must not block startup
                 logger.warning("could not report model capabilities: %s", exc)
-        stats = self.asr.get_statistics()
-        logger.info("decoder=%s second_pass=%s", stats["decoder"], stats["second_pass"])
+        logger.info(
+            "startup diagnostics: model path=%s tokens path=%s sherpa-onnx=%s "
+            "streaming=%s input_device=%s sample_rate=%d vad_onset=%.4f "
+            "vad_offset=%.4f adaptive_vad=%s decoder=%s second_pass=%s",
+            asr.model_path,
+            asr.tokens_path,
+            _sherpa_onnx_version(),
+            streaming,
+            audio.device if audio.device is not None else "default",
+            audio.sample_rate,
+            audio.vad_onset_rms,
+            audio.vad_offset_rms,
+            "enabled" if audio.vad_adaptive else "disabled",
+            stats["decoder"],
+            stats["second_pass"],
+        )
+        logger.info(
+            "backend=%s provider=%s threads=%d feature_dim=%d decoding=%s "
+            "require_streaming=%s benchmark=%s output_mode=%s",
+            asr.asr_backend,
+            asr.device,
+            asr.num_threads,
+            asr.feature_dim,
+            asr.decoding_method,
+            asr.require_streaming,
+            asr.benchmark_mode,
+            self.config.output_mode.value,
+        )
 
     # ------------------------------------------------------------------ #
     def _track_performance(self) -> None:
@@ -287,8 +320,8 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
                         help="utterance-end second-pass decoder (natural endpoints only)")
     parser.add_argument("--require-streaming", action="store_true",
                         help="fail at startup if the model does not behave as an online/"
-                             "streaming recognizer (recommended for production; the sherpa-onnx "
-                             "backend never falls back to an offline decoder regardless of this flag)")
+                             "streaming recognizer (default for the desktop app; retained for "
+                             "explicit scripts/configs that opted out)")
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
     parser.add_argument("--model", default=None, help="path to the sherpa-onnx model.int8.onnx")
     parser.add_argument("--tokens", default=None, help="path to the sherpa-onnx tokens.txt")

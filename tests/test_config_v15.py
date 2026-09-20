@@ -99,12 +99,17 @@ def test_sample_rate_is_locked_to_16k():
         ASRConfig(sample_rate=8000)
 
 
-def test_require_streaming_defaults_off_for_test_doubles_but_the_gate_is_unconditional():
-    """``require_streaming`` is an orchestration knob for ``make_decoder()``;
-    the real streaming GATE (asr_backend.py never falls back to an offline
-    recognizer) applies regardless of this flag. Production should set
-    SHENAVA_REQUIRE_STREAMING=1 (see .env.example)."""
-    assert ASRConfig().require_streaming is False
+def test_require_streaming_is_the_production_default(monkeypatch):
+    """No valid streaming recognizer means production startup failure.
+
+    Tests and replay tools that intentionally exercise the endpoint fallback
+    must opt out explicitly with ``require_streaming=False`` or
+    ``SHENAVA_REQUIRE_STREAMING=0``.
+    """
+    assert ASRConfig().require_streaming is True
+    monkeypatch.setenv("SHENAVA_REQUIRE_STREAMING", "0")
+    config = apply_env_overrides(AppConfig())
+    assert config.asr.require_streaming is False
 
 
 def test_benchmark_mode_defaults_off():

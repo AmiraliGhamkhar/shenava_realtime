@@ -148,6 +148,7 @@ class SherpaStream:
             while self._recognizer.is_ready(self._stream):
                 self._recognizer.decode_stream(self._stream)
                 self._stats.decode_count += 1
+                logger.debug("decoder step completed (decode_count=%d)", self._stats.decode_count)
         except Exception:
             self._stats.decoder_errors += 1
             raise
@@ -207,6 +208,7 @@ class SherpaOnnxASR:
         self.device: str = "cpu"
         self.load_seconds: float = 0.0
         self._stats = _Stats()
+        self._last_streaming_probe_error = ""
 
     # ------------------------------------------------------------------ #
     @property
@@ -267,7 +269,7 @@ class SherpaOnnxASR:
         except ImportError as exc:  # pragma: no cover - environment dependent
             raise ModelLoadError(
                 "sherpa-onnx is required for the ASR backend. "
-                "Install it: pip install -r requirements-asr.txt"
+                "Install it: pip install -r requirements.txt"
             ) from exc
 
         if self.config.sample_rate != 16000:
@@ -301,10 +303,13 @@ class SherpaOnnxASR:
         # is no fallback to OfflineRecognizer here, ever.
         streaming = self._probe_streaming(recognizer)
         if self.config.require_streaming and not streaming:
+            reason = self._last_streaming_probe_error or "startup streaming probe failed"
             raise StreamingUnavailable(
                 "SHENAVA_REQUIRE_STREAMING is set but the loaded model does not "
-                "behave as an online/streaming recognizer. Refusing to fall "
-                "back to an offline decoder."
+                "complete the online streaming lifecycle "
+                "(create_stream -> accept_waveform -> is_ready/decode_stream -> "
+                "get_result -> input_finished -> final get_result). Refusing to "
+                f"fall back to an offline decoder. Probe failure: {reason}"
             )
 
         self.device = "cpu"
@@ -324,22 +329,88 @@ class SherpaOnnxASR:
         )
 
     def _probe_streaming(self, recognizer: Any) -> bool:
-        """Confirm the recognizer behaves as an online/streaming model.
+        """Run a tiny real online transaction against the loaded recognizer.
 
-        A stream must accept incremental ``accept_waveform`` calls and report
-        readiness via ``is_ready`` without requiring the whole utterance up
-        front. This is checked mechanically (not assumed from the model name).
+        This is the production startup gate.  Method names alone are not
+        enough: the Shenava model must create an ``OnlineStream``, accept valid
+        16 kHz float32 audio, become ready, execute at least one
+        ``decode_stream`` step, produce a result before and after
+        ``input_finished()``, and drain cleanly.  The synthetic input is only
+        one second of silence, so the probe is cheap and contains no user audio.
         """
-        try:
-            stream = recognizer.create_stream()
-            probe = np.zeros(1600, dtype=np.float32)  # 100ms, far under 22s cap
-            stream.accept_waveform(int(self.config.sample_rate), probe)
-            has_ready = hasattr(recognizer, "is_ready") and hasattr(recognizer, "decode_stream")
-            has_result = hasattr(recognizer, "get_result")
-            return bool(has_ready and has_result)
-        except Exception as exc:
-            logger.warning("streaming capability probe failed: %s", exc)
+        self._last_streaming_probe_error = ""
+        stream: Any = None
+        input_finished_called = False
+        decode_steps = 0
+        max_decode_steps = 256  # protects startup from a buggy always-ready fake/model
+
+        def fail(message: str) -> bool:
+            self._last_streaming_probe_error = message
+            logger.warning("streaming capability probe failed: %s", message)
             return False
+
+        try:
+            create_stream = getattr(recognizer, "create_stream", None)
+            is_ready = getattr(recognizer, "is_ready", None)
+            decode_stream = getattr(recognizer, "decode_stream", None)
+            get_result = getattr(recognizer, "get_result", None)
+            if not callable(create_stream):
+                return fail("recognizer has no callable create_stream()")
+            if not callable(is_ready):
+                return fail("recognizer has no callable is_ready(stream)")
+            if not callable(decode_stream):
+                return fail("recognizer has no callable decode_stream(stream)")
+            if not callable(get_result):
+                return fail("recognizer has no callable get_result(stream)")
+
+            stream = create_stream()
+            if stream is None:
+                return fail("create_stream() returned None")
+            accept_waveform = getattr(stream, "accept_waveform", None)
+            input_finished = getattr(stream, "input_finished", None)
+            if not callable(accept_waveform):
+                return fail("stream has no callable accept_waveform(sample_rate, samples)")
+            if not callable(input_finished):
+                return fail("stream has no callable input_finished()")
+
+            samples = np.zeros(int(self.config.sample_rate), dtype=np.float32)  # 1s silence
+            accept_waveform(int(self.config.sample_rate), samples)
+
+            while bool(is_ready(stream)):
+                decode_stream(stream)
+                decode_steps += 1
+                if decode_steps > max_decode_steps:
+                    return fail("decode_stream did not drain readiness during startup probe")
+            if get_result(stream) is None:
+                return fail("get_result() returned None before input_finished()")
+
+            input_finished()
+            input_finished_called = True
+
+            while bool(is_ready(stream)):
+                decode_stream(stream)
+                decode_steps += 1
+                if decode_steps > max_decode_steps:
+                    return fail("decode_stream did not drain after input_finished()")
+            if get_result(stream) is None:
+                return fail("get_result() returned None after input_finished()")
+            if decode_steps == 0:
+                return fail("one second of valid 16 kHz audio produced no decode_stream() step")
+
+            logger.debug("streaming startup probe completed with %d decode step(s)", decode_steps)
+            return True
+        except Exception as exc:
+            self._last_streaming_probe_error = str(exc) or exc.__class__.__name__
+            logger.warning("streaming capability probe failed: %s", self._last_streaming_probe_error)
+            return False
+        finally:
+            if stream is not None and not input_finished_called:
+                finish = getattr(stream, "input_finished", None)
+                if callable(finish):
+                    try:
+                        finish()
+                    except Exception:  # pragma: no cover - defensive cleanup only
+                        logger.debug("probe stream cleanup failed", exc_info=True)
 
     # ------------------------------------------------------------------ #
     def capabilities(self) -> ModelCapabilities:
