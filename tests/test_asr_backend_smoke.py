@@ -65,5 +65,58 @@ def test_real_model_stream_lifecycle_matches_the_mock_contract():
         stream.accept(np.zeros(100, dtype=np.float32))
 
 
+def test_real_model_completes_the_full_streaming_lifecycle_with_chunked_audio():
+    """Exercise the exact lifecycle the startup probe (and production VAD
+    segments) rely on: create_stream -> feed small chunks -> drain every
+    decode step the recognizer is ready for -> input_finished() -> drain the
+    remainder -> get_result().
+
+    This checks the streaming *infrastructure* against the real model, not
+    ASR accuracy: the probe audio is a deterministic low-amplitude tone, and
+    no assertion is made about the transcribed text being non-empty or
+    correct.
+    """
+    from shenava_realtime.asr_backend import SherpaOnnxASR
+
+    backend = SherpaOnnxASR(ASRConfig())
+    backend.load()
+    recognizer = backend.recognizer
+
+    sample_rate = int(backend.config.sample_rate)
+    chunk_s = 0.1
+    chunk_samples = int(chunk_s * sample_rate)
+    total_seconds = 8.0
+    total_samples = int(total_seconds * sample_rate)
+    t = np.arange(total_samples, dtype=np.float32) / sample_rate
+    audio = (0.02 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+
+    stream = recognizer.create_stream()
+    decode_steps_before_eof = 0
+    for offset in range(0, total_samples, chunk_samples):
+        chunk = audio[offset:offset + chunk_samples]
+        stream.accept_waveform(sample_rate, chunk)
+        while recognizer.is_ready(stream):
+            recognizer.decode_stream(stream)
+            decode_steps_before_eof += 1
+
+    mid_result = recognizer.get_result(stream)
+    assert isinstance(mid_result, str)
+
+    stream.input_finished()
+
+    decode_steps_after_eof = 0
+    while recognizer.is_ready(stream):
+        recognizer.decode_stream(stream)
+        decode_steps_after_eof += 1
+
+    final_result = recognizer.get_result(stream)
+    assert isinstance(final_result, str)
+
+    # The full lifecycle (chunks fed + input_finished + drain) must produce
+    # at least one decode step; synthetic probe audio is not required to
+    # produce non-empty transcription text.
+    assert decode_steps_before_eof + decode_steps_after_eof >= 1
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
