@@ -1,6 +1,0 @@
-# Optional desktop extras: microphone capture, clipboard and global hotkeys.
-# Linux may also need OS packages for PortAudio, Tk and an X11 clipboard utility.
-sounddevice
-soundfile
-pynput
-pyperclip
