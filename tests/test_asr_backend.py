@@ -21,6 +21,7 @@ from tests.fake_sherpa_onnx import FakeOnlineRecognizer
 def fake_sherpa_onnx_module(monkeypatch):
     """Inject a fake ``sherpa_onnx`` module before the backend imports it."""
     FakeOnlineRecognizer.last_kwargs = {}
+    FakeOnlineRecognizer.last_instance = None
     FakeOnlineRecognizer.fail_init = False
     FakeOnlineRecognizer.streams_created = 0
     module = types.ModuleType("sherpa_onnx")
@@ -160,6 +161,38 @@ def test_capabilities_report_streaming_cpu_int8(model_files):
     assert caps.streaming is True
     assert caps.provider == "cpu"
     assert "streaming=yes" in caps.describe()
+
+
+def test_streaming_probe_executes_the_online_lifecycle(model_files):
+    backend = make_backend(model_files)
+    backend.load()
+    events = FakeOnlineRecognizer.last_instance.events
+    assert events[:2] == ["create_stream", "is_ready"]
+    assert "decode_stream" in events
+    assert events.count("get_result") >= 2
+    assert events.index("decode_stream") < events.index("get_result")
+
+
+def test_streaming_probe_rejects_missing_streaming_methods(model_files, monkeypatch):
+    class MissingDecode(FakeOnlineRecognizer):
+        decode_stream = None
+
+    sys.modules["sherpa_onnx"].OnlineRecognizer = MissingDecode
+    backend = make_backend(model_files)
+    with pytest.raises(StreamingUnavailable, match="decode_stream"):
+        backend.load()
+
+
+def test_streaming_probe_does_more_than_check_method_existence(model_files):
+    class BrokenDecode(FakeOnlineRecognizer):
+        def decode_stream(self, stream):
+            self.events.append("decode_stream")
+            raise RuntimeError("decode lifecycle was exercised")
+
+    sys.modules["sherpa_onnx"].OnlineRecognizer = BrokenDecode
+    backend = make_backend(model_files)
+    with pytest.raises(StreamingUnavailable, match="decode lifecycle was exercised"):
+        backend.load()
 
 
 def test_require_streaming_gate_has_no_fallback(model_files, monkeypatch):

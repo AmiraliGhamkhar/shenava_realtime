@@ -84,7 +84,7 @@ def test_make_decoder_prefers_cache_aware_streams():
 
 
 def test_make_decoder_falls_back_to_endpoint():
-    decoder = make_decoder(FakeBackend())
+    decoder = make_decoder(FakeBackend(), ASRConfig(require_streaming=False))
     assert isinstance(decoder, EndpointDecoder)
     assert decoder.name == "endpoint"
 
@@ -104,7 +104,10 @@ def test_streaming_disable_and_strict_mode():
     class Backend(FakeBackend):
         def create_stream(self):
             pytest.fail("disabled stream must not be created")
-    assert isinstance(make_decoder(Backend(), ASRConfig(use_cache_aware_streaming=False)), EndpointDecoder)
+    assert isinstance(
+        make_decoder(Backend(), ASRConfig(use_cache_aware_streaming=False, require_streaming=False)),
+        EndpointDecoder,
+    )
 
 
 def test_native_finalize_is_called_even_without_pending_audio():

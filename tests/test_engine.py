@@ -32,6 +32,7 @@ def harness():
     config = AppConfig()
     config.audio.queue_max_chunks = 128  # tests enqueue faster than microphone time
     config.save_transcripts = False
+    config.asr.require_streaming = False
     config.asr.partial_interval_s = 0.4
     capture = FakeAudioCapture()
     backend = FakeBackend(RecordingTranscriber(lambda seconds: PHRASE if seconds >= 0.3 else ""))
@@ -134,6 +135,7 @@ def test_a_backend_crash_does_not_kill_the_worker():
     config = AppConfig()
     config.audio.queue_max_chunks = 128  # tests enqueue faster than microphone time
     config.save_transcripts = False
+    config.asr.require_streaming = False
     config.asr.partial_interval_s = 0.4
     capture = FakeAudioCapture()
     calls = {"count": 0}
@@ -167,6 +169,7 @@ def test_forced_vad_split_does_not_complete_a_number_phrase():
     config = AppConfig()
     config.audio.queue_max_chunks = 128
     config.save_transcripts = False
+    config.asr.require_streaming = False
     capture = FakeAudioCapture()
     texts = iter(["بیمار دوز سی و", "پنج میلی گرم"])
     backend = FakeBackend(RecordingTranscriber(lambda seconds: next(texts)))

@@ -11,6 +11,11 @@ criterion #1 (tests pass without the model).
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import pytest
@@ -58,3 +63,7 @@ def test_real_model_stream_lifecycle_matches_the_mock_contract():
     assert confidence == 0.0
     with pytest.raises(RuntimeError):
         stream.accept(np.zeros(100, dtype=np.float32))
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__]))

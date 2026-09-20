@@ -9,7 +9,8 @@ file) so the app can be retargeted without editing code:
 ``SHENAVA_NUM_THREADS``, ``SHENAVA_SAMPLE_RATE``, ``SHENAVA_FEATURE_DIM``,
 ``SHENAVA_DECODING_METHOD``, ``SHENAVA_SECOND_PASS``,
 ``SHENAVA_REQUIRE_STREAMING``, ``SHENAVA_OUTPUT_MODE``,
-``SHENAVA_INJECTOR_MODE``, ``SHENAVA_AUDIO_DEVICE``, ``SHENAVA_LOG_LEVEL``.
+``SHENAVA_INJECTOR_MODE``, ``SHENAVA_AUDIO_DEVICE``,
+``SHENAVA_VAD_ADAPTIVE`` and ``SHENAVA_LOG_LEVEL``.
 """
 
 from __future__ import annotations
@@ -199,15 +200,11 @@ class ASRConfig:
     feature_dim: int = 80
     decoding_method: str = DEFAULT_DECODING_METHOD
     confidence_threshold: float = 0.0  # deprecated; uncalibrated scores are not filtered
-    # Recommended production value is 1 (see .env.example / README): the real
-    # sherpa-onnx model is always streaming, so this should normally be left
-    # on. It defaults to False here only so test doubles that model a
-    # non-streaming backend (tests/fakes.py) keep exercising the explicit
-    # EndpointDecoder fallback path in streaming.py without every call site
-    # having to opt out. The GATE itself (never falling back to an Offline
-    # recognizer) is enforced unconditionally in asr_backend.py regardless of
-    # this flag.
-    require_streaming: bool = False
+    # Production invariant: the desktop app must fail at startup unless the
+    # loaded recognizer behaves as an online streaming recognizer.  Endpoint
+    # fallback remains available only for explicit tests/tools by setting this
+    # to False (or SHENAVA_REQUIRE_STREAMING=0).
+    require_streaming: bool = True
     max_segment_s: float = 22.0
     commit_on_endpoint: bool = True
 

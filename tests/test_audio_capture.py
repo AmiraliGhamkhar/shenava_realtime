@@ -150,6 +150,66 @@ def test_list_devices_without_sounddevice():
     assert module.sd is None or isinstance(module.AudioCapture.list_devices(), list)
 
 
+def test_audio_capture_wires_adaptive_vad_disabled():
+    capture = AudioCapture(AudioConfig(vad_adaptive=False))
+    assert capture.vad.config.adaptive is False
+
+
+def test_vad_adaptive_env_override_reaches_energy_vad(monkeypatch):
+    from shenava_realtime.config import AppConfig, apply_env_overrides
+
+    monkeypatch.setenv("SHENAVA_VAD_ADAPTIVE", "0")
+    config = apply_env_overrides(AppConfig())
+    capture = AudioCapture(config.audio)
+    assert capture.vad.config.adaptive is False
+
+
+def test_no_adaptive_vad_cli_reaches_energy_vad():
+    from main import build_config, parse_args
+
+    config = build_config(parse_args(["--no-adaptive-vad"]))
+    capture = AudioCapture(config.audio)
+    assert capture.vad.config.adaptive is False
+
+
+def test_audio_capture_wires_adaptive_vad_tuning_fields():
+    config = AudioConfig(
+        vad_adaptive=True,
+        vad_noise_init_ms=300,
+        vad_noise_halflife_ms=1500,
+        vad_onset_snr=3.0,
+        vad_offset_snr=1.5,
+        vad_adaptive_max_gain=4.0,
+    )
+    capture = AudioCapture(config)
+    assert capture.vad.config.noise_init_ms == 300
+    assert capture.vad.config.noise_halflife_ms == 1500
+    assert capture.vad.config.onset_snr == 3.0
+    assert capture.vad.config.offset_snr == 1.5
+    assert capture.vad.config.adaptive_max_gain == 4.0
+
+
+def test_microphone_level_diagnostics_do_not_alter_silent_audio(caplog):
+    capture = AudioCapture(AudioConfig(vad_adaptive=False, chunk_size=BLOCK))
+    observed = []
+    capture.on_audio = lambda chunk, in_speech: observed.append(chunk.copy())
+    sample = block(0.0)
+    with caplog.at_level("WARNING"):
+        for _ in range(34):  # > 2 seconds at 1024/16k
+            capture._consume(sample)
+    assert observed and all(np.array_equal(chunk, sample) for chunk in observed)
+    assert "microphone frames are arriving but input level is very low" in caplog.text
+    assert capture.stats["segments"] == 0
+
+
+def test_first_useful_microphone_level_is_logged_once(caplog):
+    capture = AudioCapture(AudioConfig(vad_adaptive=False, chunk_size=BLOCK))
+    with caplog.at_level("INFO"):
+        capture._consume(block(0.02))
+        capture._consume(block(0.03))
+    assert caplog.text.count("microphone input detected") == 1
+
+
 def test_missing_sounddevice_raises_on_start():
     import shenava_realtime.audio_capture as module
 
