@@ -37,6 +37,7 @@ The local files are `models/shenava/model.int8.onnx` and `models/shenava/tokens.
 ## Recent fixes in this patch
 
 - The startup streaming gate now runs a real online lifecycle probe instead of checking method names only.
+- The probe was rewritten to feed chunked audio (`PROBE_CHUNK_S`=0.1s, up to `PROBE_MAX_AUDIO_S`=8.0s) instead of one single one-second block, and no longer requires a `decode_stream()` step to happen *before* `input_finished()`. A model that needs more accumulated context before becoming ready, or that only surfaces buffered features once the stream is flushed at end-of-input, is now correctly recognized as a valid streaming model; only a stream that never becomes ready anywhere in the whole transaction fails the gate.
 - `ASRConfig.require_streaming` defaults to `True`, so production startup fails when no valid streaming recognizer is available.
 - `AudioCapture` now passes all adaptive VAD settings from `AudioConfig` into `VADConfig`; `SHENAVA_VAD_ADAPTIVE=0` and `--no-adaptive-vad` now reach the actual `EnergyVAD`.
 - Microphone diagnostics distinguish frames arriving from frames arriving at an effectively silent level, without modifying audio or thresholds.

@@ -57,6 +57,13 @@ logger = logging.getLogger(__name__)
 # (see Phase 0 report); re-validate against the real model once available.
 FINALIZE_TAIL_PADDING_S = 0.5
 
+# Startup streaming-capability probe: audio is fed in small chunks (never one
+# big one-second block) so a model that needs several chunks of look-ahead
+# before its first `decode_stream()` step -- or that only flushes buffered
+# features after `input_finished()` -- is not mistaken for a broken decoder.
+PROBE_CHUNK_S = 0.1
+PROBE_MAX_AUDIO_S = 8.0
+
 
 class ASRBackend(Protocol):
     def transcribe(self, audio: np.ndarray) -> Tuple[str, float]:  # pragma: no cover
@@ -329,25 +336,54 @@ class SherpaOnnxASR:
         )
 
     def _probe_streaming(self, recognizer: Any) -> bool:
-        """Run a tiny real online transaction against the loaded recognizer.
+        """Run a real online streaming transaction against the loaded recognizer.
 
         This is the production startup gate.  Method names alone are not
-        enough: the Shenava model must create an ``OnlineStream``, accept valid
-        16 kHz float32 audio, become ready, execute at least one
-        ``decode_stream`` step, produce a result before and after
-        ``input_finished()``, and drain cleanly.  The synthetic input is only
-        one second of silence, so the probe is cheap and contains no user audio.
+        enough: the Shenava model must create an ``OnlineStream``, accept
+        valid 16 kHz float32 audio fed in small chunks (never one big
+        one-second block), drain every ``decode_stream()`` step the
+        recognizer is ``is_ready()`` for as it goes, call
+        ``input_finished()`` and drain again, and produce a ``get_result()``
+        both mid-stream and after the final drain.
+
+        Crucially, a decode step is *not* required before ``input_finished()``:
+        a real streaming CTC model may need more accumulated context than the
+        probe window provides before it becomes ready, and any buffered
+        features are only guaranteed to surface once the stream is flushed.
+        The probe only fails if *no* decode step happens anywhere in the
+        whole transaction (chunks fed + input_finished + final drain). The
+        synthetic input is a low-amplitude sine wave (never silence-only,
+        never real user/microphone audio), so the probe is cheap, contains no
+        user audio, and is a transport/lifecycle check only -- not an ASR
+        accuracy test.
         """
         self._last_streaming_probe_error = ""
         stream: Any = None
         input_finished_called = False
-        decode_steps = 0
-        max_decode_steps = 256  # protects startup from a buggy always-ready fake/model
+        pre_eof_decodes = 0
+        post_eof_decodes = 0
+        first_decode_at_s: Optional[float] = None
+        max_decode_steps = 4096  # protects startup from a buggy always-ready fake/model
 
         def fail(message: str) -> bool:
             self._last_streaming_probe_error = message
             logger.warning("streaming capability probe failed: %s", message)
             return False
+
+        def drain(is_ready: Any, decode_stream: Any, audio_position_s: float, after_eof: bool) -> Optional[str]:
+            """Run every decode step currently available; returns an error message on overflow."""
+            nonlocal pre_eof_decodes, post_eof_decodes, first_decode_at_s
+            while bool(is_ready(stream)):
+                decode_stream(stream)
+                if after_eof:
+                    post_eof_decodes += 1
+                else:
+                    pre_eof_decodes += 1
+                if first_decode_at_s is None:
+                    first_decode_at_s = audio_position_s
+                if pre_eof_decodes + post_eof_decodes > max_decode_steps:
+                    return "decode_stream did not drain readiness during startup probe"
+            return None
 
         try:
             create_stream = getattr(recognizer, "create_stream", None)
@@ -373,31 +409,52 @@ class SherpaOnnxASR:
             if not callable(input_finished):
                 return fail("stream has no callable input_finished()")
 
-            samples = np.zeros(int(self.config.sample_rate), dtype=np.float32)  # 1s silence
-            accept_waveform(int(self.config.sample_rate), samples)
+            sample_rate = int(self.config.sample_rate)
+            chunk_samples = max(1, int(PROBE_CHUNK_S * sample_rate))
+            total_samples = int(PROBE_MAX_AUDIO_S * sample_rate)
+            # Deterministic, low-amplitude, non-silent probe audio (never real
+            # user/microphone audio, never used for accuracy comparisons).
+            t = np.arange(total_samples, dtype=np.float32) / sample_rate
+            probe_audio = (0.02 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
 
-            while bool(is_ready(stream)):
-                decode_stream(stream)
-                decode_steps += 1
-                if decode_steps > max_decode_steps:
-                    return fail("decode_stream did not drain readiness during startup probe")
+            for offset in range(0, total_samples, chunk_samples):
+                chunk = probe_audio[offset:offset + chunk_samples]
+                accept_waveform(sample_rate, chunk)
+                audio_position_s = min(offset + chunk.size, total_samples) / float(sample_rate)
+                error = drain(is_ready, decode_stream, audio_position_s, after_eof=False)
+                if error:
+                    return fail(error)
+
             if get_result(stream) is None:
                 return fail("get_result() returned None before input_finished()")
 
             input_finished()
             input_finished_called = True
 
-            while bool(is_ready(stream)):
-                decode_stream(stream)
-                decode_steps += 1
-                if decode_steps > max_decode_steps:
-                    return fail("decode_stream did not drain after input_finished()")
-            if get_result(stream) is None:
-                return fail("get_result() returned None after input_finished()")
-            if decode_steps == 0:
-                return fail("one second of valid 16 kHz audio produced no decode_stream() step")
+            error = drain(is_ready, decode_stream, PROBE_MAX_AUDIO_S, after_eof=True)
+            if error:
+                return fail(error)
 
-            logger.debug("streaming startup probe completed with %d decode step(s)", decode_steps)
+            final_result = get_result(stream)
+            if final_result is None:
+                return fail("get_result() returned None after input_finished()")
+
+            total_decodes = pre_eof_decodes + post_eof_decodes
+            if total_decodes == 0:
+                return fail(
+                    f"streaming probe produced no decode step after "
+                    f"{PROBE_MAX_AUDIO_S:.1f}s of probe audio and input_finished()"
+                )
+
+            logger.debug(
+                "streaming probe: audio=%.1fs chunk=%.3fs pre_eof_decodes=%d "
+                "post_eof_decodes=%d first_decode_at=%s result_available=yes",
+                PROBE_MAX_AUDIO_S,
+                PROBE_CHUNK_S,
+                pre_eof_decodes,
+                post_eof_decodes,
+                f"{first_decode_at_s:.1f}s" if first_decode_at_s is not None else "n/a",
+            )
             return True
         except Exception as exc:
             self._last_streaming_probe_error = str(exc) or exc.__class__.__name__

@@ -329,3 +329,211 @@ def test_decoder_errors_are_counted(model_files, monkeypatch):
     with pytest.raises(RuntimeError):
         stream.decode_ready()
     assert backend.stats()["decoder_errors"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Streaming capability probe: full-lifecycle regression tests.
+#
+# The probe feeds PROBE_MAX_AUDIO_S (8.0s) of deterministic sine-wave audio
+# in PROBE_CHUNK_S (0.1s) chunks, draining every decode step the recognizer
+# reports ready for as it goes, then calls input_finished() and drains again.
+# A decode step is only required *somewhere* in that whole transaction -- not
+# necessarily before input_finished() -- so a model that needs more context
+# than one second, or that only surfaces buffered features at end-of-stream,
+# must still be accepted as a valid streaming model.
+# --------------------------------------------------------------------------- #
+def _make_stream_recognizer(is_ready, decode_stream, get_result, events=None):
+    """Build a minimal fake OnlineRecognizer/OnlineStream pair for probe tests.
+
+    ``is_ready``, ``decode_stream`` and ``get_result`` are callables invoked
+    with the stream instance; ``events`` (if given) collects every method
+    name called on either the recognizer or the stream, in order.
+    """
+    log = events if events is not None else []
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.total_samples = 0
+            self.decoded = 0
+            self.finished = False
+
+        def accept_waveform(self, sample_rate, waveform) -> None:
+            log.append("accept_waveform")
+            self.total_samples += len(waveform)
+
+        def input_finished(self) -> None:
+            log.append("input_finished")
+            self.finished = True
+
+    class _Recognizer(FakeOnlineRecognizer):
+        def create_stream(self):
+            log.append("create_stream")
+            return _Stream()
+
+        def is_ready(self, stream):
+            log.append("is_ready")
+            return is_ready(stream)
+
+        def decode_stream(self, stream):
+            log.append("decode_stream")
+            decode_stream(stream)
+
+        def get_result(self, stream):
+            log.append("get_result")
+            return get_result(stream)
+
+    return _Recognizer
+
+
+def test_streaming_probe_accepts_delayed_readiness(model_files, monkeypatch):
+    """Case B: not ready for several chunks, then becomes ready before EOF."""
+    # PROBE_CHUNK_S=0.1s / PROBE_MAX_AUDIO_S=8.0s @ 16kHz -> ready only once
+    # 3s (well past the old one-second assumption) has accumulated.
+    READY_AFTER_SAMPLES = 3 * 16000
+
+    def is_ready(stream):
+        return stream.total_samples >= READY_AFTER_SAMPLES and stream.decoded < 1
+
+    def decode_stream(stream):
+        stream.decoded += 1
+
+    def get_result(stream):
+        return "delayed" if stream.decoded else ""
+
+    events: list = []
+    recognizer_cls = _make_stream_recognizer(is_ready, decode_stream, get_result, events)
+    sys.modules["sherpa_onnx"].OnlineRecognizer = recognizer_cls
+    backend = make_backend(model_files)
+    backend.load()  # must not raise: readiness after >1s of audio is valid
+    assert backend.capabilities().streaming is True
+    assert "decode_stream" in events
+    # The decode happened before input_finished() (case B).
+    assert events.index("decode_stream") < events.index("input_finished")
+
+
+def test_streaming_probe_accepts_decode_only_after_eof(model_files):
+    """Case C: never ready before EOF; only ready once input_finished() runs."""
+
+    def is_ready(stream):
+        return stream.finished and stream.decoded < 1
+
+    def decode_stream(stream):
+        stream.decoded += 1
+
+    def get_result(stream):
+        return "eof-decoded" if stream.decoded else ""
+
+    events: list = []
+    recognizer_cls = _make_stream_recognizer(is_ready, decode_stream, get_result, events)
+    sys.modules["sherpa_onnx"].OnlineRecognizer = recognizer_cls
+    backend = make_backend(model_files)
+    backend.load()  # must not raise: this is a valid streaming lifecycle
+    assert backend.capabilities().streaming is True
+    assert "decode_stream" in events
+    # No decode before input_finished(); the only decode is after EOF.
+    finish_index = events.index("input_finished")
+    assert "decode_stream" not in events[:finish_index]
+    assert "decode_stream" in events[finish_index:]
+
+
+def test_streaming_probe_rejects_a_permanently_non_ready_stream(model_files):
+    """Invalid case: never ready, even after input_finished(); must fail."""
+
+    def is_ready(stream):
+        return False
+
+    def decode_stream(stream):  # pragma: no cover - never called
+        pass
+
+    def get_result(stream):
+        return ""
+
+    recognizer_cls = _make_stream_recognizer(is_ready, decode_stream, get_result)
+    sys.modules["sherpa_onnx"].OnlineRecognizer = recognizer_cls
+    backend = make_backend(model_files)
+    with pytest.raises(StreamingUnavailable, match="no decode step"):
+        backend.load()
+
+
+def test_streaming_probe_normal_lifecycle_order(model_files):
+    """A healthy model: decode both before and after input_finished(), with
+    get_result() available at both points, in the documented order."""
+
+    def is_ready(stream):
+        return stream.total_samples >= 1600 and stream.decoded < stream.total_samples // 1600
+
+    def decode_stream(stream):
+        stream.decoded += 1
+
+    def get_result(stream):
+        return " ".join(f"tok{i}" for i in range(stream.decoded))
+
+    events: list = []
+    recognizer_cls = _make_stream_recognizer(is_ready, decode_stream, get_result, events)
+    sys.modules["sherpa_onnx"].OnlineRecognizer = recognizer_cls
+    backend = make_backend(model_files)
+    backend.load()
+    assert backend.capabilities().streaming is True
+
+    assert events[0] == "create_stream"
+    assert "accept_waveform" in events
+    assert "decode_stream" in events
+    assert "input_finished" in events
+
+    finish_index = events.index("input_finished")
+    # get_result() runs at least once before input_finished()...
+    assert "get_result" in events[:finish_index]
+    # ...decode_stream()/is_ready() continue afterwards to drain the tail...
+    assert any(name in ("is_ready", "decode_stream") for name in events[finish_index + 1:])
+    # ...and the transaction ends on a final get_result().
+    assert events[-1] == "get_result"
+
+
+def test_streaming_probe_feeds_multiple_small_chunks(model_files):
+    """The probe must never send one big one-second (or larger) block."""
+    chunk_sizes: list = []
+
+    def is_ready(stream):
+        return stream.total_samples >= 1600 and stream.decoded < stream.total_samples // 1600
+
+    def decode_stream(stream):
+        stream.decoded += 1
+
+    def get_result(stream):
+        return " ".join(f"tok{i}" for i in range(stream.decoded))
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.total_samples = 0
+            self.decoded = 0
+            self.finished = False
+
+        def accept_waveform(self, sample_rate, waveform) -> None:
+            chunk_sizes.append(len(waveform))
+            self.total_samples += len(waveform)
+
+        def input_finished(self) -> None:
+            self.finished = True
+
+    class _Recognizer(FakeOnlineRecognizer):
+        def create_stream(self):
+            return _Stream()
+
+        def is_ready(self, stream):
+            return is_ready(stream)
+
+        def decode_stream(self, stream):
+            decode_stream(stream)
+
+        def get_result(self, stream):
+            return get_result(stream)
+
+    sys.modules["sherpa_onnx"].OnlineRecognizer = _Recognizer
+    backend = make_backend(model_files)
+    backend.load()
+
+    # PROBE_CHUNK_S=0.1s @ 16 kHz -> 1600 samples/chunk; PROBE_MAX_AUDIO_S=8.0s
+    # -> 80 chunks, never one 16000-sample (1s) or larger block.
+    assert len(chunk_sizes) > 1
+    assert all(size <= 1600 for size in chunk_sizes)
+    assert sum(chunk_sizes) == int(8.0 * 16000)
