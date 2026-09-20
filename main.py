@@ -4,7 +4,7 @@
 Pipeline::
 
     microphone -> audio capture -> adaptive RMS VAD -> bounded queue
-              -> Shenava v1.5 streaming decoder (CTC by default, RNNT optional)
+              -> Shenava-Koochik-v1.0 streaming CTC decoder (sherpa-onnx, CPU)
               -> transcript stabilization -> endpoint second pass
               -> FST post-processing -> stable deltas -> clipboard / keyboard
 
@@ -154,22 +154,21 @@ class ShenavaApp:
         self._shutdown.set()
 
     def _log_startup_diagnostics(self) -> None:
-        """One-line summary of what is actually active (no transcript content)."""
+        """One-block summary of what is actually active (no transcript content)."""
         asr = self.config.asr
         logger.info(
-            "model=%s head=%s right_context=%s second_pass=%s beam=%d "
-            "hotwords(aliases=%s, phonetic=%s, max=%d) adaptive_vad=%s benchmark=%s",
-            asr.model_path or asr.model_name, asr.resolved_decoder, asr.right_context,
-            asr.second_pass, asr.second_pass_beam_size, asr.hotword_use_aliases,
-            asr.hotword_use_phonetic_variants, asr.hotword_max,
+            "backend=%s model=%s tokens=%s provider=%s threads=%d "
+            "sample_rate=%d feature_dim=%d second_pass=%s adaptive_vad=%s benchmark=%s",
+            asr.asr_backend, asr.model_path, asr.tokens_path, asr.device, asr.num_threads,
+            asr.sample_rate, asr.feature_dim, asr.second_pass,
             self.config.audio.vad_adaptive, asr.benchmark_mode,
         )
         capabilities = getattr(self.asr.backend, "capabilities", None)
         if callable(capabilities):
             try:
-                logger.info("checkpoint capabilities — %s", capabilities().describe())
+                logger.info("model capabilities — %s", capabilities().describe())
             except Exception as exc:  # capability reporting must not block startup
-                logger.warning("could not report checkpoint capabilities: %s", exc)
+                logger.warning("could not report model capabilities: %s", exc)
         stats = self.asr.get_statistics()
         logger.info("decoder=%s second_pass=%s", stats["decoder"], stats["second_pass"])
 
@@ -284,29 +283,19 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     parser.add_argument("--self-test", action="store_true", help="headless synthetic streaming/startup check; not real recognition")
     parser.add_argument("--clinical-sqlite", help="optional SQLite output file")
     parser.add_argument("--clinical-jsonl", help="optional JSONL output file")
-    parser.add_argument("--right-context", type=int, choices=[0, 1, 6, 13])
-    parser.add_argument("--second-pass", choices=["off", "greedy", "context"],
+    parser.add_argument("--second-pass", choices=["off", "greedy"],
                         help="utterance-end second-pass decoder (natural endpoints only)")
-    parser.add_argument("--hotword-specialty", default=None,
-                        help="restrict decoder hotwords to one specialty (plus general terms)")
-    parser.add_argument("--require-streaming", action="store_true")
-    parser.add_argument("--allow-download", action="store_true", help="explicitly permit model provisioning over network")
+    parser.add_argument("--require-streaming", action="store_true",
+                        help="fail at startup if the model does not behave as an online/"
+                             "streaming recognizer (recommended for production; the sherpa-onnx "
+                             "backend never falls back to an offline decoder regardless of this flag)")
     parser.add_argument("--config", type=Path, default=None, help="path to a JSON config file")
-    parser.add_argument("--model", default=None, help="path to a local .nemo checkpoint")
-    parser.add_argument("--device", default=None, help="torch device: auto, cpu, cuda, cuda:1")
-    parser.add_argument("--decoder", default=None, choices=["ctc", "rnnt", "auto"],
-                        help="recognition head: ctc (production default), "
-                             "rnnt (experimental, hybrid checkpoints only), "
-                             "auto (explicitly use the default head = ctc)")
-    parser.add_argument("--beam-size", type=int, default=None,
-                        help="CTC second-pass beam width [1, 32] (default 4)")
-    parser.add_argument("--hotword-aliases", action="store_true",
-                        help="let reviewed terminology aliases bias the CTC second pass")
-    parser.add_argument("--hotword-phonetic", action="store_true",
-                        help="let reviewed phonetic variants bias the CTC second pass")
+    parser.add_argument("--model", default=None, help="path to the sherpa-onnx model.int8.onnx")
+    parser.add_argument("--tokens", default=None, help="path to the sherpa-onnx tokens.txt")
+    parser.add_argument("--device", default=None, help="cpu only (sherpa-onnx backend has no GPU support)")
     parser.add_argument("--no-adaptive-vad", action="store_true",
                         help="use the fixed RMS thresholds instead of the adaptive noise floor")
-    parser.add_argument("--threads", type=int, default=None, help="torch CPU thread count")
+    parser.add_argument("--threads", type=int, default=None, help="sherpa-onnx CPU thread count")
     parser.add_argument("--output-mode", choices=[mode.value for mode in OutputMode], default=None)
     parser.add_argument("--audio-device", default=None, help="input device index or name")
     parser.add_argument("--no-overlay", action="store_true", help="disable the overlay window")
@@ -321,10 +310,10 @@ def build_config(args: argparse.Namespace) -> AppConfig:
     config = AppConfig.from_env(args.config)
     if args.model:
         config.asr.model_path = args.model
+    if args.tokens:
+        config.asr.tokens_path = args.tokens
     if args.device:
         config.asr.device = args.device
-    if args.decoder:
-        config.asr.decoder_type = args.decoder
     if args.threads:
         config.asr.num_threads = args.threads
     if args.output_mode:
@@ -341,22 +330,10 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         config.clinical_sqlite = args.clinical_sqlite
     if args.clinical_jsonl:
         config.clinical_jsonl = args.clinical_jsonl
-    if args.right_context is not None:
-        config.asr.right_context = args.right_context
     if args.second_pass:
         config.asr.second_pass = args.second_pass
-    if args.hotword_specialty:
-        config.asr.hotword_specialty = args.hotword_specialty
-    if args.beam_size is not None:
-        config.asr.second_pass_beam_size = args.beam_size
-    if args.hotword_aliases:
-        config.asr.hotword_use_aliases = True
-    if args.hotword_phonetic:
-        config.asr.hotword_use_phonetic_variants = True
     if args.no_adaptive_vad:
         config.audio.vad_adaptive = False
-    if args.allow_download:
-        config.asr.allow_download = True
     if args.require_streaming:
         config.asr.require_streaming = True
     config.asr.__post_init__()

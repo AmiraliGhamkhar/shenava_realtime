@@ -24,11 +24,9 @@ import numpy as np
 
 from .audio_capture import AudioCapture
 from .config import AppConfig
-from .hotwords import build_hotwords
 from .pipeline import TranscriptionPipeline
 from .postprocessor import PostProcessor
 from .streaming import make_decoder, make_second_pass
-from .terminology import default_rules
 from .utils import TextBuffer
 
 logger = logging.getLogger(__name__)
@@ -57,9 +55,9 @@ class RealtimeASR:
         self.asr_config = self.config.asr
 
         if backend is None:
-            from .asr_backend import NeMoASR  # lazy: keeps torch/NeMo out of tests
+            from .asr_backend import SherpaOnnxASR  # lazy: keeps sherpa-onnx out of tests
 
-            backend = NeMoASR(self.asr_config)
+            backend = SherpaOnnxASR(self.asr_config)
         self.backend = backend
         load = getattr(backend, "load", None)
         if callable(load):
@@ -74,23 +72,13 @@ class RealtimeASR:
         postprocessor = PostProcessor(self.config.postprocess)
         decoder = make_decoder(self.backend, self.asr_config, self.config.audio.sample_rate)
         second_pass = None
+        # Decoder-time hotword biasing ("second_pass=context") required raw
+        # per-frame emissions from the NeMo backend and is not implementable
+        # against sherpa-onnx's public API (see second_pass.py); ASRConfig
+        # rejects that mode at startup, so hotwords are never built here.
         hotwords: list = []
         if pipeline is None:
             second_pass = make_second_pass(self.backend, self.asr_config)
-            # Decoder-time hotwords come from the same reviewed rules as the
-            # post-ASR normalization; only the context mode needs them.
-            if second_pass is not None and self.asr_config.second_pass == "context":
-                hotwords = build_hotwords(
-                    default_rules(),
-                    specialty=self.asr_config.hotword_specialty,
-                    max_hotwords=self.asr_config.hotword_max,
-                    use_aliases=self.asr_config.hotword_use_aliases,
-                    use_phonetic_variants=self.asr_config.hotword_use_phonetic_variants,
-                )
-                logger.info(
-                    "second pass hotwords: %d (specialty: %s)",
-                    len(hotwords), self.asr_config.hotword_specialty or "general",
-                )
         self.pipeline = pipeline or TranscriptionPipeline(
             decoder=decoder,
             postprocessor=postprocessor,
@@ -355,7 +343,7 @@ class RealtimeASR:
         return {
             **self.stats,
             "decoder": getattr(self.pipeline.decoder, "name", "unknown"),
-            "decoder_head": self.asr_config.resolved_decoder,
+            "decoder_head": "ctc",
             "second_pass": second_pass.name if second_pass is not None else "off",
             "second_pass_stats": self.pipeline.second_pass_stats,
             "total_audio_duration": self.stats["audio_seconds"],

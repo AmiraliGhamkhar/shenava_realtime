@@ -1,8 +1,9 @@
 """Headless streaming replay: --self-test (synthetic backend), or --model + --wav.
 
-Real WAV replay uses the real NeMo backend and VAD, at microphone speed. No
-microphone, desktop, downloads, or test-suite imports are needed. Synthetic mode
-verifies orchestration only and must not be reported as model accuracy testing.
+Real WAV replay uses the real sherpa-onnx backend and VAD, at microphone
+speed. No microphone, desktop, downloads, or test-suite imports are needed.
+Synthetic mode verifies orchestration only and must not be reported as model
+accuracy testing.
 """
 from __future__ import annotations
 import argparse
@@ -86,20 +87,21 @@ class SyntheticStream:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
-    parser.add_argument('--model')
+    parser.add_argument('--model', help='path to the sherpa-onnx model.int8.onnx')
+    parser.add_argument('--tokens', help='path to the sherpa-onnx tokens.txt')
     parser.add_argument('--wav', type=Path)
     parser.add_argument('--device', default='cpu')
-    parser.add_argument('--right-context', type=int, choices=[0, 1, 6, 13], default=13)
     parser.add_argument('--allow-endpoint', action='store_true')
     args = parser.parse_args(argv)
-    if not args.self_test and not (args.model and args.wav):
-        parser.error('Supply --self-test or both --model and --wav')
+    if not args.self_test and not (args.model and args.tokens and args.wav):
+        parser.error('Supply --self-test or --model, --tokens and --wav')
     config = AppConfig()
     config.output_mode = OutputMode.CONSOLE
     config.save_transcripts = False
-    config.asr.model_path = args.model
+    if not args.self_test:
+        config.asr.model_path = args.model
+        config.asr.tokens_path = args.tokens
     config.asr.device = args.device
-    config.asr.right_context = args.right_context
     config.asr.require_streaming = not args.allow_endpoint
     setup_logging('INFO')
     backend = None

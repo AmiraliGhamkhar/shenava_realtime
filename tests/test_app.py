@@ -31,8 +31,8 @@ def test_application_starts_drains_and_stops(tmp_path, monkeypatch):
 
 def test_missing_model_startup_is_readable(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    assert main(['--model', str(tmp_path/'missing.nemo'), '--no-overlay', '--no-inject']) == 1
-    assert 'Local Shenava checkpoint not found' in capsys.readouterr().err
+    assert main(['--model', str(tmp_path/'missing.onnx'), '--no-overlay', '--no-inject']) == 1
+    assert 'Local sherpa-onnx model not found' in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #
@@ -69,13 +69,17 @@ def test_early_commit_without_medical_output_still_loads():
 
 def test_second_pass_cli_flags_are_applied():
     from main import build_config, parse_args
-    args = parse_args(["--second-pass", "context", "--hotword-specialty", "cardiology"])
+    args = parse_args(["--second-pass", "off"])
     config = build_config(args)
-    assert config.asr.second_pass == "context"
-    assert config.asr.hotword_specialty == "cardiology"
-    assert build_config(parse_args(["--second-pass", "off"])).asr.second_pass == "off"
+    assert config.asr.second_pass == "off"
     # Default stays the conservative online default: greedy offline re-decode.
     assert build_config(parse_args([])).asr.second_pass == "greedy"
+
+
+def test_second_pass_context_is_not_an_accepted_cli_choice():
+    from main import parse_args
+    with pytest.raises(SystemExit):
+        parse_args(["--second-pass", "context"])
 
 
 def test_clinical_persistence_is_opt_in(tmp_path, monkeypatch):
