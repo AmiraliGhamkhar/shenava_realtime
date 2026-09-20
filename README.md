@@ -1,137 +1,383 @@
-# Shenava realtime
+# Shenava Realtime
 
-Shenava realtime is a local desktop Persian medical dictation app.  It captures 16 kHz mono microphone audio, segments speech with an RMS VAD, decodes with the Shenava-Koochik-v1.0 sherpa-onnx streaming CTC model on CPU, applies deterministic Persian/medical post-processing, then writes stable text to the console, overlay, clipboard, or keyboard injector.
+**Shenava Realtime** is a local desktop application for **Persian medical speech-to-text**.
 
-No LLM, embeddings, RAG, vector database, PyTorch, NeMo runtime, or semantic/fuzzy correction layer is used.
+It captures microphone audio at **16 kHz mono**, detects speech with a lightweight **RMS-based VAD**, transcribes speech using the **Shenava-Koochik-v1.0 Streaming CTC** model through **Sherpa-ONNX**, applies deterministic Persian and medical text processing, and sends the final text to the selected output.
+
+The application is designed to run **locally on CPU**.
+
+It does **not** use:
+
+* LLMs
+* Embeddings
+* RAG
+* Vector databases
+* PyTorch
+* NeMo runtime
+* Semantic or fuzzy correction
+
+---
 
 ## Architecture
 
 ```text
-microphone 16 kHz mono
-  → AudioCapture bounded queue
-  → RMS EnergyVAD (optional adaptive noise floor)
-  → SPEECH_START / audio / SPEECH_END events
-  → one long-lived sherpa_onnx.OnlineRecognizer
-  → one fresh OnlineStream per VAD utterance
-  → endpoint-safe stabilizer
-  → deterministic post-processing:
-       raw ASR → Unicode normalization → terminology → numbers
-       → measurements/BP → clinical context → stable final text
-  → output mode: overlay / inject / both / clipboard / console
+Microphone
+    │
+    ▼
+16 kHz Mono Audio
+    │
+    ▼
+AudioCapture
+    │
+    ▼
+RMS Energy VAD
+    │
+    ├── SPEECH_START
+    ├── Audio
+    └── SPEECH_END
+    │
+    ▼
+Sherpa-ONNX Streaming CTC
+    │
+    ▼
+Endpoint-Safe Stabilizer
+    │
+    ▼
+Deterministic Post-Processing
+    │
+    ├── Unicode normalization
+    ├── Medical terminology
+    ├── Number normalization
+    ├── Measurements / blood pressure
+    └── Clinical text cleanup
+    │
+    ▼
+Stable Final Text
+    │
+    ├── Overlay
+    ├── Keyboard Injector
+    ├── Clipboard
+    └── Console
 ```
 
-## Installation
+The application creates **one long-lived `OnlineRecognizer`** and a **new `OnlineStream` for each VAD-detected utterance**.
 
-Python 3.10+ is required.
+---
 
-```bash
+# Installation
+
+Python **3.10 or newer** is required.
+
+Create a virtual environment:
+
+```powershell
 python -m venv .venv
-. .venv/bin/activate        # Windows: .venv\Scripts\activate
+```
+
+Activate it in PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install the required packages:
+
+```powershell
 pip install -r requirements.txt
 ```
 
-For tests and development:
+---
 
-```bash
+# Development and Tests
+
+Install development dependencies:
+
+```powershell
 pip install -r requirements-dev.txt
+```
+
+Run the test suite:
+
+```powershell
 python -m pytest -q
+```
+
+Run the application self-test:
+
+```powershell
 python main.py --self-test
 ```
 
-## Exact model provisioning
+> `--self-test` checks application orchestration only. It does **not** validate real speech recognition accuracy.
 
-The app does not download models automatically.  Download the exact sherpa-onnx export manually:
+---
 
-```bash
-hf download \
-  mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26 \
-  --revision 4be3d2375c98a985154122d69b43360eb8bdca5a \
-  model.int8.onnx tokens.txt \
+# Model Setup
+
+The application does **not** download the model automatically.
+
+Download the exact Shenava Sherpa-ONNX model manually.
+
+From the **root directory of the repository**, run:
+
+```powershell
+hf download mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26 `
+  --revision 4be3d2375c98a985154122d69b43360eb8bdca5a `
+  model.int8.onnx tokens.txt `
   --local-dir models/shenava
 ```
 
-Expected files:
+The following files must exist:
 
 ```text
-models/shenava/model.int8.onnx
-models/shenava/tokens.txt
+models/
+└── shenava/
+    ├── model.int8.onnx
+    └── tokens.txt
 ```
 
-`tokens.txt` is expected to contain 1025 tokens.  See `models/shenava/README.md` for the provisioning contract.
+`tokens.txt` is expected to contain **1025 tokens**.
 
-## Basic run
+For the complete model provisioning details, see:
 
-```bash
+```text
+models/shenava/README.md
+```
+
+---
+
+# Basic Run
+
+Start the application:
+
+```powershell
 python main.py
 ```
 
-Useful desktop switches:
+Useful commands:
 
-```bash
+```powershell
 python main.py --output-mode console
+```
+
+Run without the overlay and keyboard injector:
+
+```powershell
 python main.py --no-overlay --no-inject --output-mode console
+```
+
+List available audio devices:
+
+```powershell
 python main.py --list-devices
+```
+
+Use a specific microphone:
+
+```powershell
 python main.py --audio-device 1
 ```
 
-## Debug run
+---
 
-```bash
-python main.py \
-  --no-overlay \
-  --no-inject \
-  --output-mode console \
-  --require-streaming \
-  --second-pass off \
+# Debug Mode
+
+For troubleshooting, run:
+
+```powershell
+python main.py `
+  --no-overlay `
+  --no-inject `
+  --output-mode console `
+  --require-streaming `
+  --second-pass off `
   --log-level DEBUG
 ```
 
-Startup logs include model path, tokens path, sherpa-onnx version if importable, streaming yes/no, input device, sample rate, VAD thresholds, adaptive VAD status, decoder name, and second-pass mode.  Runtime logs distinguish microphone delivery, low/silent input, VAD `SPEECH_START`, decoder steps at DEBUG level, endpoint finalization, and output.
+At startup, the application reports important runtime information such as:
 
-## Real WAV verification
+* Model path
+* Tokens path
+* Sherpa-ONNX version, when available
+* Streaming support
+* Input device
+* Sample rate
+* VAD thresholds
+* Adaptive VAD status
+* Decoder
+* Second-pass mode
 
-Use a real PCM16 16 kHz mono WAV.  Do not pass `--allow-endpoint` when validating the production streaming path.
+Runtime logs help distinguish between:
 
-```bash
-python tools/verify_pipeline.py \
-  --model models/shenava/model.int8.onnx \
-  --tokens models/shenava/tokens.txt \
-  --wav path/to/real_16khz_mono_pcm16.wav
+* microphone/audio delivery problems
+* silent or very low microphone input
+* `SPEECH_START`
+* decoder activity
+* endpoint finalization
+* final output
+
+Use `DEBUG` logging when you need detailed decoder information.
+
+---
+
+# Real WAV Verification
+
+For real ASR validation, use a **PCM16, 16 kHz, mono WAV** file.
+
+Example:
+
+```powershell
+python tools/verify_pipeline.py `
+  --model models/shenava/model.int8.onnx `
+  --tokens models/shenava/tokens.txt `
+  --wav path\to\real_16khz_mono_pcm16.wav
 ```
 
-`python main.py --self-test` is synthetic orchestration only; it is not a real ASR validation.
+Do **not** use `--allow-endpoint` when testing the normal production streaming path.
 
-## Configuration and environment variables
+### Important
 
-Common variables:
+A successful:
 
-| Variable | Meaning |
-|---|---|
-| `SHENAVA_MODEL_PATH` | local `model.int8.onnx` path |
-| `SHENAVA_TOKENS_PATH` | local `tokens.txt` path |
-| `SHENAVA_REQUIRE_STREAMING` | default `1`; set `0` only for explicit endpoint-fallback tests/tools |
-| `SHENAVA_NUM_THREADS` | sherpa-onnx CPU threads |
-| `SHENAVA_SECOND_PASS` | `greedy` or `off` |
-| `SHENAVA_AUDIO_DEVICE` | sounddevice input device index/name |
-| `SHENAVA_VAD_ADAPTIVE` | `1`/`0`; `0` disables adaptive VAD |
-| `SHENAVA_OUTPUT_MODE` | `overlay`, `inject`, `both`, `clipboard`, or `console` |
-| `SHENAVA_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+```powershell
+python main.py --self-test
+```
 
-CLI overrides include `--model`, `--tokens`, `--threads`, `--audio-device`, `--no-adaptive-vad`, `--second-pass`, `--output-mode`, `--no-overlay`, `--no-inject`, and `--log-level`.
+does not mean that the ASR model works correctly.
 
-## Output modes
+Real transcription must be tested with **real microphone input or real speech WAV files**.
 
-- `overlay`: show text in the overlay only.
-- `inject`: type/paste stable text into the focused application only.
-- `both`: overlay plus injector.
-- `clipboard`: copy final utterances to the clipboard.
-- `console`: print stable text to stdout.
+---
 
-## Limitations
+# Configuration
 
-- Requires the local sherpa-onnx ONNX export; no automatic downloads.
-- CPU-only by design.
-- The streaming model must pass the startup online lifecycle probe; otherwise production startup fails.
-- RMS VAD is intentionally simple and threshold-based.  Low microphone gain is logged for diagnosis but not auto-corrected.
-- Medical post-processing is deterministic and conservative.  Unknown text is preserved; there is no automatic clinical inference.
-- Real accuracy, WER/CER, latency, microphone behavior, and operating-system injection behavior must be validated on the deployment machine with real audio.
+The application can be configured through environment variables.
+
+| Variable                    | Description                                            |
+| --------------------------- | ------------------------------------------------------ |
+| `SHENAVA_MODEL_PATH`        | Path to `model.int8.onnx`                              |
+| `SHENAVA_TOKENS_PATH`       | Path to `tokens.txt`                                   |
+| `SHENAVA_REQUIRE_STREAMING` | Require streaming mode. Default: `1`                   |
+| `SHENAVA_NUM_THREADS`       | Number of Sherpa-ONNX CPU threads                      |
+| `SHENAVA_SECOND_PASS`       | `greedy` or `off`                                      |
+| `SHENAVA_AUDIO_DEVICE`      | Microphone device index or name                        |
+| `SHENAVA_VAD_ADAPTIVE`      | `1` to enable adaptive VAD, `0` to disable             |
+| `SHENAVA_OUTPUT_MODE`       | `overlay`, `inject`, `both`, `clipboard`, or `console` |
+| `SHENAVA_LOG_LEVEL`         | `DEBUG`, `INFO`, `WARNING`, or `ERROR`                 |
+
+### Streaming
+
+`SHENAVA_REQUIRE_STREAMING` is enabled by default:
+
+```text
+SHENAVA_REQUIRE_STREAMING=1
+```
+
+Set it to `0` only when explicitly testing endpoint-fallback behavior or development tools.
+
+---
+
+# Command-Line Options
+
+Important CLI options include:
+
+```text
+--model
+--tokens
+--threads
+--audio-device
+--no-adaptive-vad
+--second-pass
+--output-mode
+--no-overlay
+--no-inject
+--log-level
+```
+
+CLI options override the corresponding environment variables.
+
+---
+
+# Output Modes
+
+### `overlay`
+
+Shows the final text in the desktop overlay.
+
+### `inject`
+
+Types or pastes stable final text into the currently focused application.
+
+### `both`
+
+Displays the text in the overlay and sends it through the injector.
+
+### `clipboard`
+
+Copies the final utterance to the system clipboard.
+
+### `console`
+
+Prints the final text to the terminal.
+
+---
+
+# Processing Pipeline
+
+The transcription pipeline is intentionally deterministic:
+
+```text
+Raw ASR
+   ↓
+Unicode normalization
+   ↓
+Medical terminology
+   ↓
+Number normalization
+   ↓
+Measurements / blood pressure
+   ↓
+Clinical text cleanup
+   ↓
+Stable final text
+```
+
+Unknown or uncertain text is preserved rather than automatically replaced with a guessed medical term.
+
+The application does not perform clinical reasoning or generate information that was not present in the speech.
+
+---
+
+# Limitations
+
+* The Shenava model must be available locally.
+* The application does not download models automatically.
+* Inference is CPU-only by design.
+* The selected Shenava model must pass the startup streaming lifecycle check.
+* The RMS VAD is intentionally simple and threshold-based.
+* Low microphone gain is reported for diagnosis but is not automatically corrected.
+* Medical text processing is deterministic and conservative.
+* Unknown text is preserved.
+* There is no automatic clinical inference.
+* Real **WER, CER, latency, microphone performance, and keyboard injection behavior** must be tested on the actual deployment machine.
+
+---
+
+# Recommended Validation
+
+For a reliable deployment test, validate these components separately:
+
+```text
+1. Microphone
+2. Audio format
+3. VAD
+4. Streaming decoder
+5. Final text
+6. Medical post-processing
+7. Overlay
+8. Keyboard injection
+9. Clipboard
+10. End-to-end latency
+```
+
+A successful application startup alone does not guarantee accurate real-time transcription.

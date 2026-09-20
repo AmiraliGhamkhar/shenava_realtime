@@ -1,43 +1,90 @@
-# Shenava model provisioning
+# Shenava Model Setup
 
-The application uses the sherpa-onnx streaming CTC ONNX export of Shenava-Koochik-v1.0.  Model weights are intentionally not committed to Git; `models/shenava/*.onnx` is gitignored.
+This project uses the **Shenava-Koochik-v1.0** model with **Sherpa-ONNX Streaming CTC**.
 
-## Exact artifact
+The model files are **not included in Git**. You must download them manually before running the application.
 
-- Hugging Face repository: `mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26`
-- Revision: `4be3d2375c98a985154122d69b43360eb8bdca5a`
-- Runtime loader: `sherpa_onnx.OnlineRecognizer.from_nemo_ctc`
-- Inference mode: streaming CTC, CPU, 16 kHz mono, greedy search
+## 1. Install Hugging Face CLI
 
-## Download command
+If the `hf` command is not installed:
 
-Install the Hugging Face CLI if needed, then run from the repository root:
+```powershell
+pip install -U huggingface_hub
+```
 
-```bash
-hf download \
-  mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26 \
-  --revision 4be3d2375c98a985154122d69b43360eb8bdca5a \
-  model.int8.onnx tokens.txt \
+Verify the installation:
+
+```powershell
+hf --help
+```
+
+## 2. Download the Model
+
+Open PowerShell in the **root folder of the repository** and run:
+
+```powershell
+hf download mah92/sherpa-onnx-nemo-ctc-fa-shenava-koochik-v1.0-streaming-int8-2026-06-26 `
+  --revision 4be3d2375c98a985154122d69b43360eb8bdca5a `
+  model.int8.onnx tokens.txt `
   --local-dir models/shenava
 ```
 
-The application never downloads this model automatically.  If these local files are missing, startup fails with a clear error.
+The command downloads the exact model revision required by the application.
 
-## Expected files
+## 3. Required Files
+
+After the download, the following files must exist:
 
 ```text
-models/shenava/model.int8.onnx
-models/shenava/tokens.txt
+models/
+└── shenava/
+    ├── model.int8.onnx
+    └── tokens.txt
 ```
 
-Expected vocabulary size: `1025` tokens in `tokens.txt`.
+`tokens.txt` is expected to contain **1025 tokens**.
 
-## Checksums
+## 4. Model Configuration
 
-No model or token SHA256 checksum was recorded in the repository history available to this checkout.  If you need an integrity pin, compute and record it after downloading the exact revision above, for example:
+| Setting     | Value                |
+| ----------- | -------------------- |
+| Model       | Shenava-Koochik-v1.0 |
+| Runtime     | Sherpa-ONNX          |
+| Model Type  | Streaming CTC        |
+| Language    | Persian (`fa`)       |
+| Sample Rate | 16 kHz               |
+| Audio       | Mono                 |
+| Device      | CPU                  |
+| Decoder     | Greedy Search        |
+| Format      | INT8 ONNX            |
 
-```bash
-sha256sum models/shenava/model.int8.onnx models/shenava/tokens.txt
+## 5. Model Revision
+
+The application is pinned to this Hugging Face revision:
+
+```text
+4be3d2375c98a985154122d69b43360eb8bdca5a
 ```
 
-Keep the large ONNX file out of Git.
+Using a fixed revision ensures that the same model artifact is used across environments.
+
+## 6. SHA256 Verification (Optional)
+
+Model checksums are not currently stored in the repository.
+
+To calculate SHA256 hashes in PowerShell:
+
+```powershell
+Get-FileHash .\models\shenava\model.int8.onnx -Algorithm SHA256
+Get-FileHash .\models\shenava\tokens.txt -Algorithm SHA256
+```
+
+You can save the resulting hashes in the project documentation if you want an additional integrity check.
+
+## Important
+
+The application **does not download the model automatically**.
+
+If the required model files are missing, startup will fail with a clear error message.
+
+The large ONNX model file is intentionally excluded from Git and should **not** be committed to the repository.
