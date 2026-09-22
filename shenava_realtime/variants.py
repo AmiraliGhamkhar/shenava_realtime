@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+from .text_normalize import match_key
+
 
 @dataclass(frozen=True)
 class ObservedVariant:
@@ -46,28 +48,32 @@ def align_tokens(raw: str, reference: str) -> list[tuple[int | None, int | None]
     raw_tokens = _token_spans(raw)
     ref_tokens = _token_spans(reference)
     n, m = len(raw_tokens), len(ref_tokens)
-    cost = [[1] * (m + 1) for _ in range(n + 1)]
-    for i in range(n):
-        for j in range(m):
-            cost[i + 1][j + 1] = 0 if _same_token(raw, reference, raw_tokens[i], ref_tokens[j]) else 1
-    dp = [[0] * (m + 1) for _ in range(n + 1)]
-    for i in range(n + 1):
-        dp[i][0] = i
-    for j in range(m + 1):
-        dp[0][j] = j
+    # Row-major rolling arrays (#32): the alignment needs only the previous DP
+    # row to compute the current one (O(min(n, m)) working memory instead of
+    # two O(n*m) matrices). Backtracking walks the stored rows in reverse.
+    previous_row = list(range(m + 1))
+    rows: list[list[int]] = [previous_row]
     for i in range(1, n + 1):
+        current_row = [i] + [0] * m
+        raw_token = raw_tokens[i - 1]
         for j in range(1, m + 1):
-            dp[i][j] = min(
-                dp[i - 1][j - 1] + cost[i][j], dp[i - 1][j] + 1, dp[i][j - 1] + 1
+            substitution_cost = 0 if _same_token(raw, reference, raw_token, ref_tokens[j - 1]) else 1
+            current_row[j] = min(
+                previous_row[j - 1] + substitution_cost,
+                previous_row[j] + 1,
+                current_row[j - 1] + 1,
             )
+        rows.append(current_row)
+        previous_row = current_row
     alignment: list[tuple[int | None, int | None]] = []
     i, j = n, m
     while i > 0 and j > 0:
-        if dp[i][j] == dp[i - 1][j - 1] + cost[i][j]:
+        substitution_cost = 0 if _same_token(raw, reference, raw_tokens[i - 1], ref_tokens[j - 1]) else 1
+        if rows[i][j] == rows[i - 1][j - 1] + substitution_cost:
             alignment.append((i - 1, j - 1))
             i -= 1
             j -= 1
-        elif dp[i][j] == dp[i - 1][j] + 1:
+        elif rows[i][j] == rows[i - 1][j] + 1:
             alignment.append((i - 1, None))
             i -= 1
         else:
@@ -84,8 +90,6 @@ def align_tokens(raw: str, reference: str) -> list[tuple[int | None, int | None]
 
 
 def _same_token(raw: str, reference: str, a: tuple[int, int], b: tuple[int, int]) -> bool:
-    from .text_normalize import match_key
-
     return match_key(raw[a[0]:a[1]]) == match_key(reference[b[0]:b[1]])
 
 

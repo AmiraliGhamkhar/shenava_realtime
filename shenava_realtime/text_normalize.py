@@ -72,14 +72,58 @@ def digits_to_persian(text: str) -> str:
 
 
 def fix_punctuation(text: str) -> str:
-    """No space before punctuation, exactly one space after it."""
+    """No space before punctuation, exactly one space after it.
+
+    The digit test for decimals/ratios/times runs against ``source``, a
+    reference captured before substitution, so the callback never reads a
+    variable that ``re.sub`` is reassigning (the offsets it receives index the
+    string it was given, nothing else).
+    """
     text = _RE_SPACE_BEFORE_PUNCT.sub(r"\1", text)
-    # Keep decimals, thousands separators and ratios/times intact.
-    text = _RE_SPACE_AFTER_PUNCT.sub(
-        lambda m: m.group(0) if m.start() > 0 and text[m.start()-1].isdigit()
-        and m.end() < len(text) and text[m.end()].isdigit() else m.group(0) + " ", text
-    )
-    return text
+    source = text
+
+    def _keep_digits_together(match: re.Match) -> str:
+        start, end = match.start(), match.end()
+        if (
+            start > 0
+            and end < len(source)
+            and source[start - 1].isdigit()
+            and source[end].isdigit()
+        ):
+            return match.group(0)
+        return match.group(0) + " "
+
+    return _RE_SPACE_AFTER_PUNCT.sub(_keep_digits_together, text)
+
+
+# Sentence-final punctuation appended when the model emitted none. Persian
+# uses the ASCII dot as the full stop; ؟ is the inverted question mark.
+_SENTENCE_FINAL_PUNCT = (".", "؟", "!", "؛", "\u060c", ",", ";", ":")
+# Interrogatives strong enough to mark a whole utterance as a question when
+# they open it. Mid-sentence words like "چند" are deliberately excluded: in
+# medical dictation they usually head a quantity ("چند میلی گرم"), not a
+# question.
+_QUESTION_STARTERS = ("آیا", "چرا", "چگونه", "چطور", "کِی", "کجا")
+
+
+def restore_punctuation(text: str) -> str:
+    """Append sentence-final punctuation to completed dictation.
+
+    CTC models emit no punctuation, so a completed utterance reads as a
+    run-on sentence — poor for downstream NER and readability. This
+    deterministic restoration appends "؟" when the text opens with a strong
+    interrogative and "." otherwise. It never removes, reorders or changes
+    existing punctuation, and it is idempotent, so re-processing normalized
+    text is stable.
+    """
+    stripped = text.rstrip()
+    if not stripped:
+        return text
+    if stripped[-1] in _SENTENCE_FINAL_PUNCT:
+        return text
+    if stripped.startswith(_QUESTION_STARTERS):
+        return f"{stripped}؟"
+    return f"{stripped}."
 
 
 def _is_persian_word(word: str) -> bool:

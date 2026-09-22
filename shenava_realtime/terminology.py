@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 from .aho_corasick import AhoCorasickMatcher
 
@@ -38,9 +38,27 @@ class TerminologyRule:
 _DEFAULT_DATA = Path(__file__).with_name("data") / "terminology.json"
 
 
+# Module-level parse cache (#17): PostProcessor (and therefore the engine)
+# is instantiated once per process in production, but tests and tools build it
+# repeatedly; re-reading and re-validating terminology.json each time is pure
+# overhead. The file is immutable within a run.
+_RULES_CACHE: Dict[str, Tuple[TerminologyRule, ...]] = {}
+
+
 def load_rules(path: str | Path = _DEFAULT_DATA) -> list[TerminologyRule]:
     """Load and strictly validate the dependency-free JSON terminology schema."""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    resolved = Path(path)
+    # Key on path + mtime + size so a file rewritten at the same path (tests
+    # write terminology.json variants into tmp dirs) invalidates the cache.
+    try:
+        stat = resolved.stat()
+        key = f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
+    except OSError:
+        key = str(resolved)
+    cached = _RULES_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
     if payload.get("schema_version") != 1 or not isinstance(payload.get("rules"), list):
         raise ValueError("unsupported terminology schema")
     rules = []
@@ -59,6 +77,7 @@ def load_rules(path: str | Path = _DEFAULT_DATA) -> list[TerminologyRule]:
                     f"[0, {MAX_HOTWORD_BIAS}]"
                 )
         rules.append(rule)
+    _RULES_CACHE[key] = tuple(rules)
     return rules
 
 

@@ -130,6 +130,15 @@ UNITS: Dict[str, str] = {
 }
 
 
+# Cache of default matchers keyed by construction arguments (#18): the
+# automaton is O(total pattern length) to build, and PostProcessor instances
+# are created per engine — and repeatedly by tests/tools — for the same fixed
+# dictionaries. The compiled matcher is read-only after construction
+# (``find``/``apply`` mutate nothing), so sharing it is safe. Custom
+# ``extra_terms`` still build a fresh matcher every call.
+_REWRITER_CACHE: Dict[tuple, AhoCorasickMatcher] = {}
+
+
 def build_rewriter(
     *,
     medical_terms: bool = True,
@@ -137,6 +146,11 @@ def build_rewriter(
     extra_terms: Dict[str, str] | None = None,
 ) -> AhoCorasickMatcher:
     """Build the deterministic multi-pattern transducer (compatibility API)."""
+    if not extra_terms:
+        key = (bool(medical_terms), bool(units))
+        cached = _REWRITER_CACHE.get(key)
+        if cached is not None:
+            return cached
     fst = AhoCorasickMatcher()
     if medical_terms:
         fst.add_many(MEDICAL_TERMS)
@@ -145,4 +159,6 @@ def build_rewriter(
         fst.add_many(UNITS)
     if extra_terms:
         fst.add_many(extra_terms)
+    if not extra_terms:
+        _REWRITER_CACHE[(bool(medical_terms), bool(units))] = fst
     return fst

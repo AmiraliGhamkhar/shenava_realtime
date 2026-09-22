@@ -30,7 +30,7 @@ from .aho_corasick import AhoCorasickMatcher
 from .lexicon import UNITS, build_rewriter
 from .medical_pipeline import MedicalNormalizationPipeline, ProcessingResult
 from .terminology import TerminologyRule, default_rules
-from .text_normalize import ZWNJ, fix_punctuation, join_affixes, match_key, normalize
+from .text_normalize import ZWNJ, fix_punctuation, join_affixes, match_key, normalize, restore_punctuation
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +154,8 @@ class PostProcessor:
     def finalize(self, text: str) -> str:
         if not text:
             return ""
+        if self.config.restore_punctuation:
+            text = restore_punctuation(text)
         if self.config.join_persian_affixes:
             text = join_affixes(text)
         if self.config.punctuation:

@@ -22,16 +22,31 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 
 import numpy as np
 
-try:  # pragma: no cover - optional at import time so tests run without it
-    import sounddevice as sd
-except (ImportError, OSError):  # pragma: no cover
-    sd = None
-
 from .audio_diagnostics import analyze_segment, format_summary, to_dict
 from .config import AudioConfig
 from .vad import EnergyVAD, EventType, VADEvent, VADConfig, VADState
 
 logger = logging.getLogger(__name__)
+
+
+def _load_sounddevice():
+    """Import sounddevice on first use (import must stay side-effect free)."""
+    try:
+        import sounddevice as sd
+    except (ImportError, OSError):  # pragma: no cover - depends on the host
+        return None
+    return sd
+
+
+def __getattr__(name: str):
+    # PEP 562: ``audio_capture.sd`` resolves lazily so that importing this
+    # module never pulls PortAudio in (the library must stay importable
+    # without the audio stack; see tests/test_no_heavy_deps.py).
+    if name == "sd":
+        sd = _load_sounddevice()
+        globals()["sd"] = sd
+        return sd
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Control marker pushed through the audio queue so that state changes happen on
 # the consumer thread (the only thread allowed to touch the VAD).
@@ -65,6 +80,10 @@ class AudioCapture:
                 onset_snr=self.config.vad_onset_snr,
                 offset_snr=self.config.vad_offset_snr,
                 adaptive_max_gain=self.config.vad_adaptive_max_gain,
+                hangover_ms=self.config.vad_hangover_ms,
+                max_speech_overlap_s=self.config.vad_max_speech_overlap_s,
+                spectral_gate=self.config.vad_spectral_gate,
+                spectral_flatness_threshold=self.config.vad_spectral_flatness_threshold,
             )
         )
 
@@ -125,6 +144,7 @@ class AudioCapture:
     # ------------------------------------------------------------------ #
     def start(self) -> None:
         """Open the input stream and start the consumer thread."""
+        sd = _load_sounddevice()
         if sd is None:
             raise RuntimeError("sounddevice is required for audio capture (pip install sounddevice)")
         with self._lock:
@@ -503,6 +523,7 @@ class AudioCapture:
     @staticmethod
     def list_devices() -> List[Dict[str, Any]]:
         """List input devices (empty list when sounddevice is unavailable)."""
+        sd = _load_sounddevice()
         if sd is None:
             logger.warning("sounddevice is not installed; cannot list audio devices")
             return []

@@ -41,6 +41,7 @@ network fallback anywhere in this module.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,8 @@ FINALIZE_TAIL_PADDING_S = 0.5
 # big one-second block) so a model that needs several chunks of look-ahead
 # before its first `decode_stream()` step -- or that only flushes buffered
 # features after `input_finished()` -- is not mistaken for a broken decoder.
+# Default 0.1 s; a backend instance prefers the real AudioConfig chunk size so
+# the probe validates the production chunking behaviour (issue #14).
 PROBE_CHUNK_S = 0.1
 PROBE_MAX_AUDIO_S = 8.0
 
@@ -119,6 +122,19 @@ class _Stats:
     segments: int = 0
 
 
+def _clamp_confidence(value: float) -> float:
+    """Clamp a decoder score into [0, 1]; non-finite becomes 0 (unknown)."""
+    if not math.isfinite(value):
+        return 0.0
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        # Log-prob style scores arrive negative; a positive score > 1 is
+        # assumed to be a probability-like percentage (0-100) — fold it in.
+        return value / 100.0 if value <= 100.0 else 1.0
+    return value
+
+
 class SherpaStream:
     """Thin wrapper around one ``sherpa_onnx.OnlineStream``.
 
@@ -134,6 +150,7 @@ class SherpaStream:
         self._stats = stats
         self._closed = False
         self._last_text = ""
+        self._last_confidence = 0.0
 
     # ------------------------------------------------------------------ #
     def accept(self, samples: np.ndarray) -> None:
@@ -166,14 +183,39 @@ class SherpaStream:
         """The current (cumulative) hypothesis without finalizing."""
         text = self._recognizer.get_result(self._stream)
         self._last_text = text if isinstance(text, str) else str(text)
+        # Uncalibrated stability proxy (#8): sherpa's OnlineRecognizer may
+        # expose the last decode's probability (get_result(..., True)) or a
+        # timestamps/confidences helper depending on version/model. Anything
+        # usable is stored as an in [0, 1] number; otherwise the previous
+        # behaviour (0.0 = unknown) is kept and nothing downstream filters on
+        # it — see ASRConfig.confidence_threshold and pipeline review flags.
+        confidence = getattr(self._recognizer, "get_confidence", None)
+        value = 0.0
+        if callable(confidence):
+            try:
+                value = float(confidence(self._stream))
+            except Exception:
+                value = 0.0
+        else:
+            try:
+                value = float(self._recognizer.get_result(self._stream, True))
+            except Exception:
+                value = 0.0
+        self._last_confidence = _clamp_confidence(value)
         return self._last_text
+
+    @property
+    def confidence(self) -> float:
+        """Latest uncalibrated stability proxy (0.0 when unavailable)."""
+        return self._last_confidence
 
     # ------------------------------------------------------------------ #
     def push(self, audio: np.ndarray) -> Tuple[str, float]:
         """``CacheAwareStream`` compatibility: accept + decode + text."""
         self.accept(audio)
         self.decode_ready()
-        return self.partial(), 0.0
+        text = self.partial()
+        return text, self._last_confidence
 
     def finalize(self) -> Tuple[str, float]:
         """VAD-endpoint flush: tail padding, ``input_finished``, drain, final text.
@@ -190,6 +232,8 @@ class SherpaStream:
             self.partial()
             self._closed = True
             self._stats.segments += 1
+        # Deliberately 0.0: the finalized score is not comparable to the
+        # streaming proxy (different code path); callers pin this contract.
         return self._last_text, 0.0
 
     def reset(self) -> None:
@@ -208,8 +252,12 @@ class SherpaStream:
 class SherpaOnnxASR:
     """Loads the sherpa-onnx streaming CTC model and owns the one recognizer."""
 
-    def __init__(self, config: Optional[ASRConfig] = None) -> None:
+    def __init__(self, config: Optional[ASRConfig] = None, probe_chunk_s: Optional[float] = None) -> None:
         self.config = config or ASRConfig()
+        # Issue #14: the streaming probe validates the real production chunking
+        # behaviour. The engine passes AudioConfig.chunk_duration so the probe
+        # feeds 64 ms mic blocks; tests keep the documented 0.1 s default.
+        self.probe_chunk_s = float(probe_chunk_s) if probe_chunk_s else PROBE_CHUNK_S
         self._recognizer: Any = None
         self._capabilities: Optional[ModelCapabilities] = None
         self.device: str = "cpu"
@@ -410,7 +458,7 @@ class SherpaOnnxASR:
                 return fail("stream has no callable input_finished()")
 
             sample_rate = int(self.config.sample_rate)
-            chunk_samples = max(1, int(PROBE_CHUNK_S * sample_rate))
+            chunk_samples = max(1, int(self.probe_chunk_s * sample_rate))
             total_samples = int(PROBE_MAX_AUDIO_S * sample_rate)
             # Deterministic, low-amplitude, non-silent probe audio (never real
             # user/microphone audio, never used for accuracy comparisons).
@@ -450,7 +498,7 @@ class SherpaOnnxASR:
                 "streaming probe: audio=%.1fs chunk=%.3fs pre_eof_decodes=%d "
                 "post_eof_decodes=%d first_decode_at=%s result_available=yes",
                 PROBE_MAX_AUDIO_S,
-                PROBE_CHUNK_S,
+                self.probe_chunk_s,
                 pre_eof_decodes,
                 post_eof_decodes,
                 f"{first_decode_at_s:.1f}s" if first_decode_at_s is not None else "n/a",

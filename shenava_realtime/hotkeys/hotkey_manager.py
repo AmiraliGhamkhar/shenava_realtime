@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Set
 
@@ -26,6 +27,13 @@ _MODIFIER_KEYS = {
 # With Ctrl held, pynput reports control characters; map them back to letters.
 _CONTROL_CHAR_OFFSET = 0x40
 
+# Bounded worker pool for hotkey callbacks (#33): rapid key presses no longer
+# spawn a fresh thread per press. The pool is small on purpose — hotkey
+# actions are UI-level (toggle overlay, clear transcript), and running two
+# instances of the same callback is prevented separately by
+# ``_running_bindings``.
+_POOL_SIZE = 2
+
 
 @dataclass
 class HotkeyBinding:
@@ -41,6 +49,9 @@ class HotkeyManager:
     def __init__(self, config: Optional[HotkeyConfig] = None) -> None:
         self.config = config or HotkeyConfig()
         self._running_bindings: set[str] = set()
+        self._pool = ThreadPoolExecutor(
+            max_workers=_POOL_SIZE, thread_name_prefix="hotkey"
+        )
         self.bindings: Dict[str, HotkeyBinding] = {}
         self._pressed: Set[str] = set()
         self._pressed_lock = threading.Lock()
@@ -97,7 +108,16 @@ class HotkeyManager:
             logger.exception("error while stopping the hotkey listener")
         with self._pressed_lock:
             self._pressed.clear()
+        self._shutdown_pool()
         logger.info("hotkey listener stopped")
+
+    def _shutdown_pool(self) -> None:
+        """Drain pending callbacks and stop the bounded worker pool."""
+        pool = self._pool
+        self._pool = None
+        if pool is None:
+            return
+        pool.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------------ #
     def bind(self, key_combo: str, callback: Callable[[], None], description: str = "") -> None:
@@ -162,12 +182,13 @@ class HotkeyManager:
                 self._running_bindings.add(combo)
             self.stats["presses"] += 1
             logger.debug("hotkey pressed: %s", combo)
-            threading.Thread(
-                target=self._run,
-                args=(binding,),
-                name=f"hotkey-{binding.key_combo}",
-                daemon=True,
-            ).start()
+            pool = self._pool
+            if pool is None:  # stopped while the listener event was in flight
+                return
+            try:
+                pool.submit(self._run, binding)
+            except RuntimeError:  # interpreter shutdown
+                logger.warning("hotkey pool unavailable; callback for %s dropped", combo)
         except Exception:
             logger.exception("error in the hotkey press handler")
 

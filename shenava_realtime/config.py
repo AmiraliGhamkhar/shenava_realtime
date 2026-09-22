@@ -10,13 +10,19 @@ file) so the app can be retargeted without editing code:
 ``SHENAVA_DECODING_METHOD``, ``SHENAVA_SECOND_PASS``,
 ``SHENAVA_REQUIRE_STREAMING``, ``SHENAVA_OUTPUT_MODE``,
 ``SHENAVA_INJECTOR_MODE``, ``SHENAVA_AUDIO_DEVICE``,
-``SHENAVA_VAD_ADAPTIVE`` and ``SHENAVA_LOG_LEVEL``.
+``SHENAVA_VAD_ADAPTIVE``, ``SHENAVA_VAD_MIN_SPEECH_MS``,
+``SHENAVA_VAD_MIN_SILENCE_MS``, ``SHENAVA_VAD_PRE_SPEECH_MS``,
+``SHENAVA_VAD_MAX_SPEECH_S``, ``SHENAVA_VAD_HANGOVER_MS``,
+``SHENAVA_VAD_SPECTRAL_GATE``, ``SHENAVA_VAD_MAX_SPEECH_OVERLAP_S``,
+``SHENAVA_SECOND_PASS_BEAM``, ``SHENAVA_LINGUISTIC_ENDPOINTING`` and
+``SHENAVA_LOG_LEVEL``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
@@ -69,20 +75,59 @@ class DigitStyle(str, Enum):
 # --------------------------------------------------------------------------- #
 # .env handling (tiny loader; avoids a python-dotenv dependency)
 # --------------------------------------------------------------------------- #
+def _read_env_pairs(text: str):
+    """Yield ``(key, value)`` pairs from ``.env`` text (quoted values kept).
+
+    Handles the cases the naive ``strip().strip(quote)`` parser got wrong:
+
+    * values that contain ``=`` or ``#`` inside quotes;
+    * escaped quotes and backslashes inside double-quoted values
+      (single-quoted values stay verbatim, POSIX-style);
+    * values spanning several lines inside an unterminated quote;
+    * unquoted values lose an inline ``# comment`` (with a preceding space),
+      while a ``#`` glued to the value is kept (hex colours, URLs).
+    """
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        key, raw = key.strip(), raw.strip()
+        if not key:
+            continue
+        if raw[:1] in ('"', "'"):
+            quote = raw[0]
+            chunk = raw[1:]
+            while True:
+                end = chunk.find(quote)
+                if end >= 0:
+                    value = chunk[:end]
+                    break  # anything after the closing quote is ignored
+                if index >= len(lines):
+                    value = chunk  # unterminated quote: take what is there
+                    break
+                chunk += "\n" + lines[index]
+                index += 1
+            if quote == '"':
+                value = value.replace('\\"', '"').replace("\\\\", "\\")
+            yield key, value
+        else:
+            if " #" in raw:
+                raw = raw.split(" #", 1)[0].rstrip()
+            yield key, raw
+
+
 def load_dotenv(path: Optional[Path] = None) -> None:
     """Populate ``os.environ`` from a ``.env`` file without overriding exports."""
     env_path = Path(path) if path else REPO_ROOT / ".env"
     if not env_path.is_file():
         return
     try:
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+        for key, value in _read_env_pairs(env_path.read_text(encoding="utf-8")):
+            if key not in os.environ:
                 os.environ[key] = value
     except OSError as exc:
         logger.warning("Could not read %s: %s", env_path, exc)
@@ -137,16 +182,32 @@ class AudioConfig:
     # Voice activity detection (hysteresis: onset > offset)
     vad_onset_rms: float = 0.015
     vad_offset_rms: float = 0.008
-    vad_min_speech_ms: int = 250
-    vad_min_silence_ms: int = 700
-    vad_pre_speech_ms: int = 320
+    # 150 ms keeps very short medical terms ("سی تی", "IV") while still
+    # filtering clicks and breaths; 600 ms + hangover endpoints Persian
+    # dictation without the old 0.7 s dead pause between sentences.
+    vad_min_speech_ms: int = 150
+    vad_min_silence_ms: int = 600
+    vad_pre_speech_ms: int = 400
     vad_max_speech_s: float = 20.0
+    # Speech framing kept after the silence threshold is met, so word-final
+    # stops are never clipped by the endpoint decision.
+    vad_hangover_ms: int = 150
+    # Opt-in: audio duplicated into the next segment at a forced cap cut
+    # (decoder continuity). Default 0 preserves the clinical invariant that
+    # every sample lands in exactly one segment.
+    vad_max_speech_overlap_s: float = 0.0
+    # Opt-in spectral flatness gate: noise-like frames (keyboard, equipment
+    # beeps) cannot start a speech segment when enabled.
+    vad_spectral_gate: bool = False
+    vad_spectral_flatness_threshold: float = 0.8
 
     # Adaptive noise floor: onset/offset are derived from the measured floor
     # and clamped into [threshold, threshold * vad_adaptive_max_gain].
     vad_adaptive: bool = True
     vad_noise_init_ms: int = 500
-    vad_noise_halflife_ms: int = 2000
+    # 4 s halflife keeps equipment transients (monitor beeps, ventilator
+    # cycles) from dragging the floor up within a single noise episode.
+    vad_noise_halflife_ms: int = 4000
     vad_onset_snr: float = 4.0
     vad_offset_snr: float = 2.0
     vad_adaptive_max_gain: float = 8.0
@@ -173,7 +234,11 @@ class AudioConfig:
                   noise_init_ms=self.vad_noise_init_ms,
                   noise_halflife_ms=self.vad_noise_halflife_ms,
                   onset_snr=self.vad_onset_snr, offset_snr=self.vad_offset_snr,
-                  adaptive_max_gain=self.vad_adaptive_max_gain)
+                  adaptive_max_gain=self.vad_adaptive_max_gain,
+                  hangover_ms=self.vad_hangover_ms,
+                  max_speech_overlap_s=self.vad_max_speech_overlap_s,
+                  spectral_gate=self.vad_spectral_gate,
+                  spectral_flatness_threshold=self.vad_spectral_flatness_threshold)
 
     @property
     def chunk_duration(self) -> float:
@@ -199,7 +264,11 @@ class ASRConfig:
     sample_rate: int = 16000
     feature_dim: int = 80
     decoding_method: str = DEFAULT_DECODING_METHOD
-    confidence_threshold: float = 0.0  # deprecated; uncalibrated scores are not filtered
+    # Uncalibrated confidence threshold. The decoder exposes a stability
+    # proxy (see asr_backend.SherpaStream), not a calibrated probability, so
+    # this never *filters* text; when > 0 an utterance below it is flagged
+    # with the "low_confidence" review reason instead.
+    confidence_threshold: float = 0.0
     # Production invariant: the desktop app must fail at startup unless the
     # loaded recognizer behaves as an online streaming recognizer.  Endpoint
     # fallback remains available only for explicit tests/tools by setting this
@@ -208,8 +277,13 @@ class ASRConfig:
     max_segment_s: float = 22.0
     commit_on_endpoint: bool = True
 
-    # How often to hand new audio to the streaming recognizer.
-    partial_interval_s: float = 0.5
+    # How often to hand new audio to the streaming recognizer. 0.25 s keeps
+    # partials responsive for dictation (the first decode of an utterance
+    # comes even sooner; see streaming.CacheAwareDecoder).
+    partial_interval_s: float = 0.25
+    # First decode of an utterance after this much pending audio (responsive
+    # silence-to-speech transition); later decodes wait partial_interval_s.
+    first_decode_s: float = 0.15
     use_cache_aware_streaming: bool = True
 
     # Utterance-end second pass (natural endpoints only, endpoint-commit mode):
@@ -220,6 +294,14 @@ class ASRConfig:
     # public Python API, and is rejected at startup with a clear message.
     second_pass: str = "greedy"
     second_pass_min_utterance_s: float = 0.5
+    # Opt-in: build a second recognizer with sherpa's modified_beam_search
+    # for the utterance-end second pass. Model-dependent: when the runtime
+    # refuses it, the greedy second pass stays active (explicit fallback).
+    second_pass_beam: bool = False
+    # Opt-in dual endpointing: the model's own linguistic endpointer may close
+    # an utterance while the VAD still reports speech. The RMS VAD remains the
+    # primary endpointer; this only adds a second, content-aware signal.
+    linguistic_endpointing: bool = False
     # Benchmark mode is offline-only (tools/): synthetic RTF/throughput runs.
     benchmark_mode: bool = False
 
@@ -244,6 +326,12 @@ class ASRConfig:
             )
         if not 0 < self.partial_interval_s <= 5 or not 0 < self.max_segment_s <= 120:
             raise ValueError("Invalid ASR interval or segment limit")
+        if not math.isfinite(self.first_decode_s) or not (
+            0 <= self.first_decode_s <= self.partial_interval_s
+        ):
+            raise ValueError(
+                "first_decode_s must be within [0, partial_interval_s]"
+            )
         if self.num_threads < 1 or self.holdback_words < 0:
             raise ValueError("Invalid thread count or holdback")
         if self.second_pass not in ("off", "greedy", "context"):
@@ -261,6 +349,9 @@ class ASRConfig:
 
     # Transcript stabilization: words kept un-committed until they stop moving.
     holdback_words: int = 2
+    # Scale the holdback with hypothesis length (see stabilizer.StabilizerConfig):
+    # short dictations are injected sooner, long monologues stay conservative.
+    adaptive_holdback: bool = True
 
 
 @dataclass
@@ -269,12 +360,18 @@ class PostProcessConfig:
 
     enabled: bool = True
     normalize_unicode: bool = True
-    remove_repetitions: bool = False
+    # CTC repetition artifacts are common and the FST already protects
+    # legitimate doubles ("سی سی"), so this is on by default.
+    remove_repetitions: bool = True
     convert_numbers: bool = True
     digits: DigitStyle = DigitStyle.ASCII
     medical_terms: bool = True
     units: bool = True
     punctuation: bool = True
+    # Opt-in: append sentence-final punctuation to completed dictation (CTC
+    # models emit none). Intended for endpoint-commit mode; early-commit
+    # injects per delta and would punctuate every fragment.
+    restore_punctuation: bool = False
     join_persian_affixes: bool = True
 
 
@@ -406,6 +503,19 @@ def apply_env_overrides(config: AppConfig) -> AppConfig:
         config.asr.second_pass = second_pass.strip().lower()
     config.asr.benchmark_mode = _env_bool("SHENAVA_BENCHMARK_MODE", config.asr.benchmark_mode)
     config.audio.vad_adaptive = _env_bool("SHENAVA_VAD_ADAPTIVE", config.audio.vad_adaptive)
+    config.audio.vad_min_speech_ms = _env_int("SHENAVA_VAD_MIN_SPEECH_MS", config.audio.vad_min_speech_ms)
+    config.audio.vad_min_silence_ms = _env_int("SHENAVA_VAD_MIN_SILENCE_MS", config.audio.vad_min_silence_ms)
+    config.audio.vad_pre_speech_ms = _env_int("SHENAVA_VAD_PRE_SPEECH_MS", config.audio.vad_pre_speech_ms)
+    config.audio.vad_max_speech_s = _env_float("SHENAVA_VAD_MAX_SPEECH_S", config.audio.vad_max_speech_s)
+    config.audio.vad_hangover_ms = _env_int("SHENAVA_VAD_HANGOVER_MS", config.audio.vad_hangover_ms)
+    config.audio.vad_max_speech_overlap_s = _env_float(
+        "SHENAVA_VAD_MAX_SPEECH_OVERLAP_S", config.audio.vad_max_speech_overlap_s
+    )
+    config.audio.vad_spectral_gate = _env_bool("SHENAVA_VAD_SPECTRAL_GATE", config.audio.vad_spectral_gate)
+    config.asr.second_pass_beam = _env_bool("SHENAVA_SECOND_PASS_BEAM", config.asr.second_pass_beam)
+    config.asr.linguistic_endpointing = _env_bool(
+        "SHENAVA_LINGUISTIC_ENDPOINTING", config.asr.linguistic_endpointing
+    )
     audio_device = _env("SHENAVA_AUDIO_DEVICE")
     if audio_device:
         config.audio.device = int(audio_device) if audio_device.isdigit() else audio_device

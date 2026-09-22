@@ -46,10 +46,13 @@ class MedicalNormalizationPipeline:
     def __init__(self, rules: list[TerminologyRule] | None = None, *, digits="ascii") -> None:
         self.rules = default_rules() if rules is None else rules
         self.matcher = build_matcher(self.rules)
-        self.resolver = SpanResolver(); self.numbers = PersianNumberGrammar()
+        self.resolver = SpanResolver()
+        self.numbers = PersianNumberGrammar()
         units_enabled = any(rule.category == "unit" for rule in self.rules)
-        self.measurements = MeasurementGrammar(units_enabled); self.medications = MedicationGrammar()
-        self.context = ClinicalContextGrammar(); self.protector = ProtectedSpanDetector()
+        self.measurements = MeasurementGrammar(units_enabled)
+        self.medications = MedicationGrammar()
+        self.context = ClinicalContextGrammar()
+        self.protector = ProtectedSpanDetector()
         self.digits = digits
 
     def process_normalized(self, text: str, *, convert_numbers=True) -> ProcessingResult:
@@ -73,6 +76,8 @@ class MedicalNormalizationPipeline:
                          if getattr(m.pattern.payload, "negation_sensitive", False)]
         for concept in ("تب", "درد", "تنگی نفس"):
             concept_items.extend((concept, m.start(), m.end()) for m in re.finditer(rf"(?<!\w){concept}(?!\w)", text))
+        # Stable order, no duplicate (concept, start, end) tuples: the same
+        # concept at different positions is a distinct clinical mention.
         concept_items = list(dict.fromkeys(concept_items))
         clinical = self.context.parse(text, concept_items) + self.context.anatomy(text)
 

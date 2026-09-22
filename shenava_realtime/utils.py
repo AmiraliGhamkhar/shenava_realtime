@@ -94,14 +94,18 @@ class PerformanceMonitor:
             self._samples["rtf"].append(float(rtf))
 
     def get_statistics(self) -> Dict[str, float]:
-        stats: Dict[str, float] = {}
+        # Sorting a ≤100-sample window is trivial; the point of this change is
+        # that the lock is held only to *copy* the deques, so the sort (and any
+        # future heavier percentile work) never blocks the producer thread.
         with self._lock:
-            for name, values in self._samples.items():
-                if not values:
-                    continue
-                ordered = sorted(values)
-                stats[f"{name}_avg"] = sum(values) / len(values)
-                stats[f"{name}_min"] = ordered[0]
-                stats[f"{name}_max"] = ordered[-1]
-                stats[f"{name}_p90"] = ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))]
+            snapshot = {name: list(values) for name, values in self._samples.items()}
+        stats: Dict[str, float] = {}
+        for name, values in snapshot.items():
+            if not values:
+                continue
+            ordered = sorted(values)
+            stats[f"{name}_avg"] = sum(values) / len(values)
+            stats[f"{name}_min"] = ordered[0]
+            stats[f"{name}_max"] = ordered[-1]
+            stats[f"{name}_p90"] = ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))]
         return stats

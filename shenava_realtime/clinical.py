@@ -99,12 +99,20 @@ def extract_record(text: str, ner: Optional[DictionaryNER] = None,
     scoped = {(span.start, span.end): span for span in context.parse(
         text, ((entity.text, entity.start, entity.end) for entity in entities))}
     for entity in entities:
-        span = scoped[(entity.start, entity.end)]
-        # Preserve the legacy "unspecified" positive value in persisted JSON,
-        # while exposing conservative non-present assertions when explicit.
-        assertion = "unspecified" if span.assertion == "present" else span.assertion
+        # The context grammar may not produce a span for every entity (e.g.
+        # when its window heuristics find no assertion evidence); fall back to
+        # the conservative defaults instead of raising KeyError (#31).
+        span = scoped.get((entity.start, entity.end))
+        if span is None:
+            assertion, experiencer = "unspecified", "patient"
+        else:
+            # Preserve the legacy "unspecified" positive value in persisted
+            # JSON, while exposing conservative non-present assertions when
+            # explicit.
+            assertion = "unspecified" if span.assertion == "present" else span.assertion
+            experiencer = span.experiencer
         mentions.append({**asdict(entity), "assertion": assertion,
-                         "experiencer": span.experiencer})
+                         "experiencer": experiencer})
     measurements = []
     # No plausibility-based suppression: abnormal values remain reviewable.
     pattern = r"(?<![\w.])(-?\d+(?:\.\d+)?(?:/\d+)?)\s*(mmHg|mg/dL|mmol/L|mcg/min|mg/min|mL/h|mg|mcg|mL|kg|bpm|rpm|°C|°F|%)(?!\w)"

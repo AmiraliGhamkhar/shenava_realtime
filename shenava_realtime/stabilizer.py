@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 class StabilizerConfig:
     holdback_words: int = 2
     max_partial_words: int = 240
+    # Opt-in (#9): scale the holdback with the hypothesis length —
+    # ``min(holdback_words, len(words) // 3)`` — so a short utterance does not
+    # wait out a holdback that is a large fraction of its words, while long
+    # monologues keep the configured (more conservative) window. Off by
+    # default: the pinned stabilization contracts assume a static holdback;
+    # production enables it through ASRConfig.adaptive_holdback.
+    adaptive_holdback: bool = False
 
 
 def _words(text: str) -> List[str]:
@@ -85,6 +92,10 @@ class TranscriptStabilizer:
         stable = common_prefix_length(previous, words)
 
         holdback = max(0, self.config.holdback_words)
+        if self.config.adaptive_holdback and words:
+            # Proportional window (#9): never above the configured holdback,
+            # but smaller for short hypotheses so their tail is not delayed.
+            holdback = min(holdback, len(words) // 3)
         commit_upto = min(stable, len(words) - holdback) if holdback else stable
         commit_upto = max(commit_upto, len(self._committed))
         commit_upto = min(commit_upto, len(words))

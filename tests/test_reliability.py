@@ -132,7 +132,7 @@ def test_clinical_worker_stores_json_sqlite_and_drains(tmp_path):
     assert worker.error is None
     with sqlite3.connect(db) as conn:
         payload, = conn.execute('SELECT record_json FROM utterances').fetchone()
-    assert json.loads(payload) == json.loads(output.read_text())
+    assert json.loads(payload) == json.loads(output.read_text(encoding="utf-8"))
 
 
 def test_clinical_startup_failure_is_explicit(tmp_path):

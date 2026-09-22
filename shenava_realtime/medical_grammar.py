@@ -14,6 +14,7 @@ from .value_validation import bp_plausible
 # required evidence (adjacent, left of the value) and is NOT consumed from the
 # rendered output, so "نبض 72 bpm" keeps the word.
 _RATE_KEYWORDS = (("نبض", "bpm"), ("ضربان قلب", "bpm"), ("ضربان", "bpm"), ("نفس", "rpm"))
+_RATE_KEYWORD_MAP = dict(_RATE_KEYWORDS)
 
 
 class MeasurementGrammar:
@@ -71,8 +72,9 @@ class MeasurementGrammar:
         words = text[:number.start].split()
         if not words:
             return None
-        if words[-1] in dict(_RATE_KEYWORDS):
-            return dict(_RATE_KEYWORDS)[words[-1]]
+        unit = _RATE_KEYWORD_MAP.get(words[-1])
+        if unit is not None:
+            return unit
         if len(words) >= 2 and " ".join(words[-2:]) == "ضربان قلب":
             return "bpm"
         return None
@@ -99,7 +101,8 @@ _FREQUENCIES = {"روزی دو بار": "twice_daily", "دو بار در روز"
 class MedicationGrammar:
     def parse(self, text: str, measurements: list[MeasurementSpan],
               numbers: list[NumberSpan] | None = None) -> list[MedicationSpan]:
-        results = []; numbers = numbers or []
+        results = []
+        numbers = numbers or []
         for medication in _MEDICATIONS:
             for hit in re.finditer(rf"(?<!\w){re.escape(medication)}(?!\w)", text):
                 # The drug word inside a unit phrase ("واحد انسولین") is the
@@ -117,7 +120,8 @@ class MedicationGrammar:
                     suffix = text[number.end:number.end+8]
                     unit_hit = re.match(r"\s*(روز|هفته|ماه)(?:\W|$)", suffix)
                     if "به مدت" in prefix and unit_hit:
-                        duration = f"{number.value}_{unit_hit.group(1)}"; break
+                        duration = f"{number.value}_{unit_hit.group(1)}"
+                        break
                 end = max(hit.end(), dose.end if dose else hit.end())
                 results.append(MedicationSpan(medication, hit.start(), end,
                     dose.value if dose else None, dose.unit if dose else None, route, frequency, duration))

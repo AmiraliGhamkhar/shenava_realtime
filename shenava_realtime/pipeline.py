@@ -47,7 +47,19 @@ def text_delta(previous: str, current: str) -> str:
         index += 1
     if index and current[index - 1] != " ":
         boundary = current.rfind(" ", 0, index)
-        index = boundary + 1 if boundary >= 0 else 0
+        # Back off to a word boundary only when one exists. Falling back to 0
+        # would re-emit text that was already injected (a mid-word growth such
+        # as "بیم" -> "بیمار" must emit just the new letters).
+        if boundary >= 0:
+            index = boundary + 1
+    elif index == 0 and previous:
+        # Complete rewrite: the previous text is already injected and cannot
+        # be un-typed, so any "delta" here would duplicate it on screen.
+        logger.warning(
+            "hypothesis is a complete rewrite of injected text; "
+            "nothing can be appended without duplicating it"
+        )
+        return ""
     if index < len(previous):
         logger.debug("transcript diverged after %d chars; emitting the new tail only", index)
     return current[index:]
@@ -67,12 +79,16 @@ class TranscriptionPipeline:
         hotwords: Optional[list] = None,
         second_pass_min_utterance_s: float = 0.5,
         sample_rate: int = 16000,
+        adaptive_holdback: bool = False,
+        confidence_threshold: float = 0.0,
     ) -> None:
         self.commit_on_endpoint = commit_on_endpoint
         self._latest = ""
         self.decoder = decoder
         self.postprocessor = postprocessor or PostProcessor()
-        self.stabilizer = stabilizer or TranscriptStabilizer(StabilizerConfig(holdback_words=holdback_words))
+        self.stabilizer = stabilizer or TranscriptStabilizer(
+            StabilizerConfig(holdback_words=holdback_words, adaptive_holdback=adaptive_holdback)
+        )
         self._emitted = ""
         self._prefix = ""
         self._confidence = 0.0
@@ -83,6 +99,13 @@ class TranscriptionPipeline:
         self._boundary_forced = False
         self._split_continues = False
         self._emit_forced_protected = False
+        # Audio bookkeeping for the second pass (#5): samples pushed to the
+        # decoder this utterance, and the offset where the current (post-reset)
+        # accumulation begins. Everything before that offset was already
+        # committed/emitted at the decoder-cap fold, so a second pass must
+        # re-decode only the tail — the prefix cannot be re-injected.
+        self._utterance_pushed_samples = 0
+        self._tail_start_sample = 0
 
         # Optional utterance-end second pass. It may only replace the final
         # hypothesis of an utterance that has not been emitted yet, so it is
@@ -95,6 +118,7 @@ class TranscriptionPipeline:
         self._second_pass_rewrites = 0
         self._second_pass_fallbacks = 0
         self._disagreement = False
+        self._confidence_threshold = max(0.0, float(confidence_threshold))
         self.last_review_reasons: list[str] = []
         if second_pass is not None:
             if commit_on_endpoint:
@@ -160,6 +184,8 @@ class TranscriptionPipeline:
         self._boundary_forced = False
         self._disagreement = False
         self._emit_forced_protected = False
+        self._utterance_pushed_samples = 0
+        self._tail_start_sample = 0
         self.last_review_reasons = []
         self._active = True
         if preroll is not None and np.asarray(preroll).size:
@@ -170,6 +196,8 @@ class TranscriptionPipeline:
         """Feed a block of audio; returns any newly stable text deltas."""
         if not self._active:
             return []
+        samples = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        self._utterance_pushed_samples += samples.size
         started = time.perf_counter()
         result = self.decoder.push(chunk)
         self._decode_seconds += time.perf_counter() - started
@@ -178,6 +206,16 @@ class TranscriptionPipeline:
         self._decodes += 1
         self._confidence = result.confidence or self._confidence
         return self._fold(result.text, reset=result.reset)
+
+    def decoder_last_duration_s(self) -> float:
+        """Audio seconds decoded so far this utterance (dual endpointing #22)."""
+        try:
+            audio = self.decoder.utterance_audio()
+        except Exception:
+            return 0.0
+        if audio is None:
+            return 0.0
+        return float(np.asarray(audio).size) / float(self._sample_rate)
 
     def end_utterance(self, forced: bool = False) -> List[str]:
         """Flush the decoder and commit the tail of the utterance.
@@ -213,12 +251,21 @@ class TranscriptionPipeline:
             if self.commit_on_endpoint:
                 self.stabilizer.reset()
             self.stabilizer.update(result.text)
-            # The second pass re-decodes the same utterance audio once, but
-            # only at a natural endpoint: a forced boundary means the speaker
-            # was still talking (incomplete audio), and nothing has been
-            # emitted yet in endpoint-commit mode, so replacing the final
-            # hypothesis here is not a re-injection.
-            if not forced and not cap_cut:
+            # The second pass re-decodes utterance audio once. At a *natural*
+            # endpoint the whole utterance is re-decoded. After a decoder cap
+            # cut (issue #5) only the tail that was never emitted is
+            # re-decoded: the emitted prefix cannot be re-injected, and a
+            # missing second pass silently lost full-utterance context for
+            # exactly the long monologues that need it most.
+            if cap_cut and self._tail_start_sample == 0:
+                # finalize() reported a cap reset with no mid-utterance fold:
+                # the tail offset inside the retained audio is unknowable, so
+                # re-decoding could duplicate the emitted prefix. Skip visibly.
+                logger.info(
+                    "decoder cap cut at finalize without a fold offset; "
+                    "second pass skipped for this utterance"
+                )
+            elif not forced:
                 self._apply_second_pass()
         deltas.extend(self._commit_everything())
         self.last_review_reasons = self._build_review_reasons(forced or cap_cut)
@@ -236,6 +283,8 @@ class TranscriptionPipeline:
         self._split_continues = False
         self._emit_forced_protected = False
         self._disagreement = False
+        self._utterance_pushed_samples = 0
+        self._tail_start_sample = 0
         self.last_review_reasons = []
         self._active = False
 
@@ -251,6 +300,9 @@ class TranscriptionPipeline:
             self._boundary_forced = False
             self._prefix = _separated(self._emitted)
             self.stabilizer.reset()
+            # Audio pushed from here on belongs to the fresh accumulation: it
+            # is the only part a second pass may still rewrite (#5).
+            self._tail_start_sample = self._utterance_pushed_samples
         self._latest = hypothesis
         if hypothesis:
             self.stabilizer.update(hypothesis)
@@ -314,11 +366,22 @@ class TranscriptionPipeline:
 
     # ------------------------------------------------------------------ #
     def _apply_second_pass(self) -> None:
-        """Re-decode this utterance once; may only replace unemitted text."""
+        """Re-decode this utterance once; may only replace unemitted text.
+
+        When a decoder-cap fold already committed a prefix, only the audio of
+        the current accumulation is re-decoded (issue #5): the emitted prefix
+        cannot be re-injected, and skipping the pass entirely would silently
+        lose full-context re-decoding for exactly the long monologues that
+        need it most.
+        """
         if self.second_pass is None:
             return
         audio = self.decoder.utterance_audio()
         if audio is None:
+            return
+        start = min(self._tail_start_sample, audio.size)
+        audio = audio[start:]
+        if audio.size == 0:
             return
         duration = audio.size / float(self._sample_rate)
         if duration < self._second_pass_min_s:
@@ -358,6 +421,12 @@ class TranscriptionPipeline:
             reasons.add("forced_boundary")
         if self._disagreement:
             reasons.add("decoder_disagreement")
+        # Uncalibrated confidence (#8): the decoder exposes a stability proxy,
+        # never a filter. When a threshold is configured and the utterance's
+        # confidence is below it, flag the utterance for review. 0.0 (the
+        # default) disables the flag entirely: 0.0 means "unknown".
+        if self._confidence_threshold > 0.0 and 0.0 < self._confidence < self._confidence_threshold:
+            reasons.add("low_confidence")
         return sorted(reasons)
 
 

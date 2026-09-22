@@ -57,7 +57,12 @@ class RealtimeASR:
         if backend is None:
             from .asr_backend import SherpaOnnxASR  # lazy: keeps sherpa-onnx out of tests
 
-            backend = SherpaOnnxASR(self.asr_config)
+            # The startup probe validates the real production chunking
+            # behaviour (issue #14): feed the probe the same block size the
+            # microphone delivers instead of the documented 0.1 s default.
+            backend = SherpaOnnxASR(
+                self.asr_config, probe_chunk_s=self.config.audio.chunk_duration
+            )
         self.backend = backend
         load = getattr(backend, "load", None)
         if callable(load):
@@ -88,6 +93,8 @@ class RealtimeASR:
             hotwords=hotwords,
             second_pass_min_utterance_s=self.asr_config.second_pass_min_utterance_s,
             sample_rate=self.config.audio.sample_rate,
+            adaptive_holdback=getattr(self.asr_config, "adaptive_holdback", False),
+            confidence_threshold=self.asr_config.confidence_threshold,
         )
         self.postprocessor = self.pipeline.postprocessor
 
@@ -95,6 +102,19 @@ class RealtimeASR:
         self.on_partial: Optional[Callable[[str, float], None]] = None
         self.on_text_delta: Optional[Callable[[str, float], None]] = None
         self.on_utterance_end: Optional[Callable[[str, float], None]] = None
+        # Opt-in linguistic endpointing (#22): the model's own endpointer may
+        # close an utterance while the RMS VAD still reports speech. The VAD
+        # remains the primary endpointer; this is a second, content-aware
+        # signal. Set up after the backend exists; no-op when unsupported.
+        self._linguistic_endpointing = bool(
+            getattr(self.asr_config, "linguistic_endpointing", False)
+        )
+        self._endpoint_check = getattr(self.backend, "check_endpoint", None)
+        if self._linguistic_endpointing and not callable(self._endpoint_check):
+            logger.warning(
+                "linguistic_endpointing is enabled but the backend exposes no "
+                "check_endpoint(); only the VAD endpointer stays active"
+            )
 
         self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue(maxsize=max(2, self.config.audio.queue_max_chunks))
         self._enqueue_lock = threading.Lock()
@@ -228,12 +248,17 @@ class RealtimeASR:
                         )
                 # Never continue cached inference across missing audio. The
                 # next START reopens the pipeline; orphan audio is ignored.
-                if item is None:
-                    self._queue.put_nowait((_CLEAR,))
-                    # maxsize may be one; worker will consume the reset first.
-                    self._queue.put_nowait(None)
-                else:
-                    self._queue.put_nowait((_CLEAR,))
+                # Blocking puts: the drain above emptied the queue and this
+                # lock serialises producers, so only a stalled worker can hit
+                # the timeout. A nowait pair would lose the shutdown sentinel
+                # whenever maxsize is 1-2 (CLEAR takes the last slot).
+                try:
+                    self._queue.put((_CLEAR,), timeout=1.0)
+                    if item is None:
+                        self._queue.put(None, timeout=1.0)
+                except queue.Full:
+                    logger.error("ASR queue still full after drain; worker is stalled")
+                    self.stats["overruns"] = self.stats.get("overruns", 0) + 1
 
     # ------------------------------------------------------------------ #
     def _work_loop(self) -> None:
@@ -262,6 +287,18 @@ class RealtimeASR:
             self._partial_text = ""
         elif kind == _AUDIO:
             self._consume_deltas(self.pipeline.push_audio(item[1]))
+            # Dual endpointing (#22): after feeding the audio, give the
+            # model's own endpointer a chance to close the utterance. The VAD
+            # still owns the primary decision; this only fires once per
+            # decode while the pipeline is active.
+            if (
+                self._linguistic_endpointing
+                and callable(self._endpoint_check)
+                and self.pipeline.is_active
+                and self._endpoint_check()
+            ):
+                logger.info("linguistic endpoint triggered an utterance close")
+                self._handle((_END, self.pipeline.decoder_last_duration_s(), False))
         elif kind == _END:
             if not self.pipeline.is_active:
                 return

@@ -27,9 +27,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import logging
 from typing import Callable, Optional, Sequence
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -84,5 +87,35 @@ class GreedySecondPass(SecondPassDecoder):
         if samples.size == 0:
             return None
         text, _ = self._transcribe(samples)  # score is uncalibrated; ignore
+        text = (text or "").strip()
+        return text or None
+
+
+class BeamSecondPass(SecondPassDecoder):
+    """Offline modified-beam-search re-decode (opt-in, model-dependent).
+
+    Built only when ``ASRConfig.second_pass_beam`` is set *and* the backend
+    exposes ``create_beam_recognizer()`` (a recognizer constructed with
+    sherpa's ``modified_beam_search`` decoding). The wrapper is defensive on
+    purpose: if the runtime/model rejects the method at decode time, the
+    pass returns ``None`` and the pipeline keeps the greedy result with an
+    explicit fallback counter — the same contract as every other optional
+    stage.
+    """
+
+    name = "beam"
+
+    def __init__(self, transcribe: Callable[[np.ndarray], tuple[str, float]]) -> None:
+        self._transcribe = transcribe
+
+    def decode_greedy(self, utterance: SecondPassUtterance) -> Optional[str]:
+        samples = np.asarray(utterance.audio, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return None
+        try:
+            text, _ = self._transcribe(samples)
+        except Exception:
+            logger.exception("beam second pass failed; caller keeps greedy result")
+            return None
         text = (text or "").strip()
         return text or None

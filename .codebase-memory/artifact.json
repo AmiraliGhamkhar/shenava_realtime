@@ -1,0 +1,12 @@
+{
+    "schema_version": 2,
+    "commit": "35e518f3a38e3d2f5b020facac78d2fbdff5e404",
+    "indexed_at": "2026-09-21T05:47:34Z",
+    "project": "C-Users-ali-Desktop-shenava_realtime",
+    "nodes": 1422,
+    "edges": 6855,
+    "original_size": 7995392,
+    "compressed_size": 1420549,
+    "compression_level": 9,
+    "reconcile_basis": "git-clean-head"
+}
