@@ -1,0 +1,4 @@
+# ASR runtime compatibility requirements.
+# The project now uses sherpa-onnx directly; keep this file as a stable
+# install target for older deployment scripts and documentation.
+-r requirements.txt
