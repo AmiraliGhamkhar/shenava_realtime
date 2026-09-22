@@ -80,6 +80,14 @@ class HotkeyManager:
     def start(self) -> None:
         if not self.available:
             return
+        # stop() shuts down the callback executor. Recreate it on restart;
+        # otherwise the second application run silently drops hotkey callbacks.
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(
+                max_workers=_POOL_SIZE, thread_name_prefix="hotkey"
+            )
+        with self._pressed_lock:
+            self._running_bindings.clear()
         if self.is_running:
             logger.debug("hotkey listener already running")
             return

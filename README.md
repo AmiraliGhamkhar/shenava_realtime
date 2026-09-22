@@ -86,6 +86,10 @@ Install the required packages:
 pip install -r requirements.txt
 ```
 
+For older deployment scripts that expect an ASR-specific requirements file, this
+repository also ships `requirements-asr.txt` as a compatibility shim to the
+same local sherpa-onnx runtime dependencies.
+
 ---
 
 # Development and Tests
@@ -245,6 +249,10 @@ python main.py --self-test
 
 does not mean that the ASR model works correctly.
 
+For `--output-mode console`, partial hypotheses are rendered incrementally
+with terminal line replacement. The final utterance replaces the live line;
+stable decoder deltas are not printed a second time.
+
 Real transcription must be tested with **real microphone input or real speech WAV files**.
 
 ---
@@ -354,6 +362,9 @@ The application does not perform clinical reasoning or generate information that
 * The application does not download models automatically.
 * Inference is CPU-only by design.
 * The selected Shenava model must pass the startup streaming lifecycle check.
+* Production streaming requires a sherpa-onnx **OnlineRecognizer** and
+  **OnlineStream**; the application never falls back to an OfflineRecognizer
+  when `SHENAVA_REQUIRE_STREAMING=1`.
 * The RMS VAD is intentionally simple and threshold-based.
 * Low microphone gain is reported for diagnosis but is not automatically corrected.
 * Medical text processing is deterministic and conservative.

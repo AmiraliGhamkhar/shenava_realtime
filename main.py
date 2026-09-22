@@ -81,6 +81,7 @@ class ShenavaApp:
         self.clipboard = ClipboardManager()
         self._shutdown = threading.Event()
         self._stopping = threading.Lock()
+        self._console_partial_active = False
 
         logger.info("initialising Shenava Real-time ASR (output mode: %s)", self.config.output_mode.value)
         self.asr = RealtimeASR(self.config, backend=backend, audio_capture=audio_capture)
@@ -252,13 +253,22 @@ class ShenavaApp:
     def _on_partial(self, text: str, confidence: float) -> None:
         if self.overlay is not None:
             self.overlay.update_partial(text)
+        # Console mode must expose the live hypothesis too. Stable deltas are
+        # intentionally delayed by the endpoint-safe stabilizer, so printing
+        # only _on_text_delta makes a healthy streaming decoder look endpoint-only.
+        if self.config.output_mode is OutputMode.CONSOLE and text:
+            print("\r" + text, end="", flush=True)
+            self._console_partial_active = True
 
     def _on_text_delta(self, delta: str, confidence: float) -> None:
         """Emit one stable delta — never the whole partial transcript."""
         mode = self.config.output_mode
         if mode in (OutputMode.INJECT_ONLY, OutputMode.BOTH) and self.injector is not None:
             self.injector.inject(delta)
-        if mode is OutputMode.CONSOLE:
+        if mode is OutputMode.CONSOLE and not self._console_partial_active:
+            # If live partials are being rendered, the stable delta is already
+            # represented by the current terminal line. Printing it here would
+            # duplicate text before the endpoint finalizes the line.
             print(delta, end=" " if delta.endswith(" ") else "", flush=True)
         if self.overlay is not None:
             self.overlay.update_text(self.asr.pipeline.committed_text, confidence)
@@ -276,7 +286,11 @@ class ShenavaApp:
             else:
                 logger.warning("could not copy the utterance to the clipboard")
         if self.config.output_mode is OutputMode.CONSOLE:
-            print(flush=True)
+            if self._console_partial_active:
+                print("\r" + text + " " * max(0, 80 - len(text)) + "\n", end="", flush=True)
+                self._console_partial_active = False
+            else:
+                print(flush=True)
 
     # ------------------------------------------------------------------ #
     # Hotkey actions
