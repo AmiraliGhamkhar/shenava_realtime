@@ -106,10 +106,9 @@ def test_console_mode_renders_live_partial_without_newline(capsys):
     app._on_partial("بیمار", 0.0)
     app._on_partial("بیمار تحت", 0.0)
     captured = capsys.readouterr().out
-    assert "بیمار" in captured
-    assert "بیمار تحت" in captured
-    assert "
-" not in captured
+    assert "\\rبیمار" in captured
+    assert "\\rبیمار تحت" in captured
+    assert "\\n" not in captured
     assert app._console_partial_active is True
 
 
@@ -122,7 +121,6 @@ def test_console_partial_is_replaced_by_final_line(capsys):
     app._on_partial("بیمار تحت", 0.0)
     app._on_utterance_end("بیمار تحت عمل CABG", 0.0)
     captured = capsys.readouterr().out
-    assert "بیمار تحت عمل CABG" in captured
-    assert captured.endswith("
-")
+    assert "\\rبیمار تحت عمل CABG" in captured
+    assert captured.endswith("\\n")
     assert app._console_partial_active is False
