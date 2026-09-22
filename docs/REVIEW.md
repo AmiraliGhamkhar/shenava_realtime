@@ -67,3 +67,56 @@ Real-model and real-microphone checks require the ONNX model files, `sherpa-onnx
 - No semantic correction layer; unknown text remains unchanged.
 - Overlay and injector behavior depends on the host desktop session and permissions.
 - Clinical extraction is deterministic and conservative; persisted records still require review.
+
+
+## 2026-09-22 audit
+
+The current source was audited against the documented runtime path. The ASR
+backend is not constructing an offline recognizer: it calls
+`sherpa_onnx.OnlineRecognizer.from_nemo_ctc(...)` and creates a fresh
+`OnlineStream` per VAD utterance. The startup gate exercises
+`create_stream -> accept_waveform -> is_ready/decode_stream -> get_result ->
+input_finished -> final get_result` and refuses an offline fallback.
+
+### Streaming-output root cause
+
+The decoder and engine already produced partial hypotheses through
+`RealtimeASR.on_partial`. The concrete visibility failure was in the console
+sink: `main.py` only printed `on_text_delta`, which is intentionally
+endpoint-safe/stabilized output. With the overlay disabled and
+`--output-mode console`, a healthy streaming decoder could therefore appear
+to produce nothing until stable text was committed.
+
+The console sink is now fixed to render `on_partial` incrementally with
+carriage-return line replacement and to suppress duplicate stable-delta
+printing while a live partial line is active. The final utterance replaces the
+partial line exactly once.
+
+### Additional lifecycle fix
+
+`HotkeyManager.stop()` shuts down its executor. Starting the same manager
+again previously left it with no executor, causing later hotkey callbacks to
+be silently dropped. `start()` now recreates the bounded executor when
+needed and clears stale running-binding state.
+
+### Dependency/documentation consistency
+
+- `requirements.txt` remains the authoritative runtime dependency list.
+- `requirements-dev.txt` includes runtime dependencies plus pytest.
+- `requirements-asr.txt` is now restored as a compatibility shim that includes
+  `requirements.txt`; it does not introduce another dependency set.
+- The repository's model setup is local and explicit:
+  `models/shenava/model.int8.onnx` + `tokens.txt`.
+- The old NeMo-runtime documentation and the previously referenced
+  `requirements-asr.txt`/missing model-card paths are not part of the current
+  runtime path.
+
+### Verification limitation
+
+This environment cannot clone the repository with the container's network
+stack and does not have the 132 MB model files or a physical microphone.
+Therefore a local `pip install`, `pytest -q`, `python main.py --self-test`,
+and real-model/microphone reproduction could not be executed here. The
+repository source and test changes were inspected through the GitHub tree,
+and the existing synthetic streaming tests were reviewed; this is not a
+substitute for the requested clean-environment execution log.
