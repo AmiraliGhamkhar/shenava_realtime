@@ -95,3 +95,34 @@ def test_clinical_persistence_is_opt_in(tmp_path, monkeypatch):
     assert app.clinical is None
     assert not list(tmp_path.glob("*.sqlite*"))
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_console_mode_renders_live_partial_without_newline(capsys):
+    config = AppConfig()
+    config.overlay.enabled = config.injector.enabled = False
+    config.output_mode = OutputMode.CONSOLE
+    config.asr.require_streaming = False
+    app = ShenavaApp(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
+    app._on_partial("بیمار", 0.0)
+    app._on_partial("بیمار تحت", 0.0)
+    captured = capsys.readouterr().out
+    assert "بیمار" in captured
+    assert "بیمار تحت" in captured
+    assert "
+" not in captured
+    assert app._console_partial_active is True
+
+
+def test_console_partial_is_replaced_by_final_line(capsys):
+    config = AppConfig()
+    config.overlay.enabled = config.injector.enabled = False
+    config.output_mode = OutputMode.CONSOLE
+    config.asr.require_streaming = False
+    app = ShenavaApp(config, backend=FakeBackend(), audio_capture=FakeAudioCapture())
+    app._on_partial("بیمار تحت", 0.0)
+    app._on_utterance_end("بیمار تحت عمل CABG", 0.0)
+    captured = capsys.readouterr().out
+    assert "بیمار تحت عمل CABG" in captured
+    assert captured.endswith("
+")
+    assert app._console_partial_active is False
