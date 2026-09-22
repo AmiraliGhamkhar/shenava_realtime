@@ -265,7 +265,10 @@ class ShenavaApp:
         mode = self.config.output_mode
         if mode in (OutputMode.INJECT_ONLY, OutputMode.BOTH) and self.injector is not None:
             self.injector.inject(delta)
-        if mode is OutputMode.CONSOLE:
+        if mode is OutputMode.CONSOLE and not self._console_partial_active:
+            # If live partials are being rendered, the stable delta is already
+            # represented by the current terminal line. Printing it here would
+            # duplicate text before the endpoint finalizes the line.
             print(delta, end=" " if delta.endswith(" ") else "", flush=True)
         if self.overlay is not None:
             self.overlay.update_text(self.asr.pipeline.committed_text, confidence)
